@@ -1,3 +1,36 @@
+## v2.4 — missing full-length word no longer rejects puzzle
+
+When the model reliably identified the wheel, v2.3 still required
+`WordEngine.solve(letters)` to contain a full-length anagram. That was
+a bad gate: bundled dictionary coverage is incomplete, and even genuine
+full-length words could disappear when the top-130 result limit favored
+shorter, more frequent words. The app misleadingly told the user
+**"no full-length word in dictionary"** and refused to play.
+
+Fixes:
+
+- The confirmed letter wheel is preserved even when the local dictionary
+  has no full-length word. Shorter playable words are not discarded.
+- The offline dictionary sorts full-length anagrams ahead of shorter
+  words, so the result limit cannot silently remove them.
+- If no full-length word is found, the app now asks the same configured
+  local Ollama model for English anagrams from the detected tile letters.
+  Responses are valid JSON and every suggestion is checked for length
+  and letter multiplicity using `WordEngine.isValid`. The bot tries
+  these candidates **before** the existing offline-dictionary words.
+- Failed anagram requests do not erase available shorter dictionary
+  words. If neither AI nor dictionary returns any candidates, AUTO
+  pauses and opens manual review instead of repeatedly re-scanning.
+- The floating toolbar reports the letters it recognized and whether
+  it is looking for a missing full-length word.
+
+Wordscapes uses its own accepted-word list, so neither the bundled
+dictionary nor an AI suggestion is guaranteed to be accepted in-game.
+Model-proposed anagrams may be linguistically wrong despite letter
+validation. The gesture/level logic is otherwise unchanged.
+
+---
+
 ## v2.3 — black screen curtain while AUTO keeps playing
 
 Android's normal Accessibility screenshots and gestures do **not**
