@@ -29,9 +29,16 @@ jobs:
       # command-line tools. Avoid setup-android@v3, which currently tries to
       # install the removed legacy "tools" package and exits with code 1.
       - name: Install Android API 35
+        shell: bash
         run: |
           echo "Using Android SDK at ${ANDROID_HOME}"
-          sdkmanager --install "platforms;android-35" "build-tools;35.0.0"
+          SDKMANAGER=$(find "${ANDROID_HOME}/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)
+          if [ -z "$SDKMANAGER" ]; then
+            echo "::error::Android SDK command-line tools not found under ${ANDROID_HOME}/cmdline-tools"
+            exit 1
+          fi
+          echo "Using SDK manager: $SDKMANAGER"
+          "$SDKMANAGER" --install "platforms;android-35" "build-tools;35.0.0"
 
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v4
