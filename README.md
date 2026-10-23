@@ -109,3 +109,7 @@ The entire calibration was changed back from two rectangular corners to **one ce
 - **Longer dictionary:** GitHub Actions builds an expanded CMUdict vocabulary of 3–12 alphabetic letters before compiling. This helps 9–12 letter puzzles beyond the previous 3–8 limit.
 - **Failure handling:** AUTO retries unrecognized puzzle rings up to five times, then stops rather than drawing arbitrary words. It also never auto-clicks advertisements or purchase buttons. Tesseract model initialization can briefly slow down the first scan.
 - **Building locally:** download `eng.traineddata` from https://github.com/tesseract-ocr/tessdata_fast/blob/main/eng.traineddata and place it in `app/src/main/assets/tessdata/eng.traineddata` before building in Android Studio. Alternatively use GitHub Actions, which bundles it automatically. The official CMUdict expansion also runs automatically in GitHub Actions.
+
+## Version 1.7 — readable floating controls
+
+The small single-row floating toolbar is now two rows so no buttons overlap or squash. The primary row has three equal-size 44 dp buttons: **AUTO, SCAN, STOP**. A separate secondary row has **CAL, HIDE**, and a flexible two-line status indicator. The toolbar stays within the phone screen and is limited to 560 dp wide on tablets. AUTO changes to **AUTO ON** with a green background while running. The review panel now starts below the taller toolbar. The solver and OCR algorithms are unchanged in this release.
