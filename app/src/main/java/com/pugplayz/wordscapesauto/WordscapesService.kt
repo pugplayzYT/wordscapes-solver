@@ -26,6 +26,12 @@ class WordscapesService : AccessibilityService() {
     private val ocr = LetterReader()
     private val wheelVision = WheelVision()
     private val sceneReader = SceneReader()
+    private val gemma by lazy { GemmaClient(this) }
+    private var gemmaMode = false
+    private var gemmaIdleCount = 0
+    private var gemmaFailures = 0
+    private var gemmaLastAction: GemmaClient.Scene? = null
+    private var gemmaActionFrames = 0
     private var autoPilot = false
     private var autoRetries = 0
     private var autoUiRetries = 0
@@ -64,9 +70,9 @@ class WordscapesService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) { /* Intentionally unused. */ }
-    override fun onInterrupt() { stop("Accessibility interrupted") }
+    override fun onInterrupt() { stopAutomation("Accessibility interrupted") }
     override fun onDestroy() {
-        stop("Service disabled")
+        stopAutomation("Service disabled")
         removeReview()
         if (::topBar.isInitialized && topBar.isAttachedToWindow) try { wm.removeView(topBar) } catch (_: Exception) {}
         baselineImage?.recycle(); baselineImage = null
@@ -181,7 +187,7 @@ class WordscapesService : AccessibilityService() {
 
     private fun updateAutoControl() {
         if (!::autoControl.isInitialized) return
-        autoControl.text = if (autoPilot) "AUTO ON" else "AUTO"
+        autoControl.text = if (autoPilot) (if(gemmaMode) "AI ON" else "AUTO ON") else "AUTO"
         autoControl.backgroundTintList = android.content.res.ColorStateList.valueOf(
             if (autoPilot) android.graphics.Color.rgb(23, 142, 106)
             else android.graphics.Color.rgb(40, 112, 185)
@@ -229,6 +235,11 @@ class WordscapesService : AccessibilityService() {
 
     private fun stopAutomation(reason: String) {
         autoPilot = false
+        gemmaMode = false
+        gemmaIdleCount = 0
+        gemmaFailures = 0
+        gemmaLastAction = null
+        gemmaActionFrames = 0
         autoRetries = 0
         autoUiRetries = 0
         lastUiAction = null
@@ -239,6 +250,20 @@ class WordscapesService : AccessibilityService() {
     }
 
     private fun startAutomation() {
+        if (GemmaClient.enabled(this)) {
+            removeReview()
+            stop("Starting Gemma vision…")
+            autoPilot = true
+            gemmaMode = true
+            gemmaIdleCount = 0
+            gemmaFailures = 0
+            gemmaLastAction = null
+            gemmaActionFrames = 0
+            keepAwake(true)
+            updateAutoControl()
+            gemmaInspect()
+            return
+        }
         if (!Settings.hasCalibration(this)) {
             message("Set CAL circle first")
             return
@@ -253,6 +278,207 @@ class WordscapesService : AccessibilityService() {
         keepAwake(true)
         updateAutoControl()
         inspectScene(true)
+    }
+
+    /**
+     * AI state machine: each screenshot is sent to the user's Ollama model.
+     * Gemma classifies the whole screen, then we crop the wheel and perform a
+     * second image query for precise letter locations. The phone controls taps.
+     */
+    private fun gemmaInspect(oneShot: Boolean = false) {
+        if (!oneShot && (!autoPilot || !gemmaMode)) return
+        val ticket = generation
+        message("Gemma: reading screen…")
+        capture { screenshot ->
+            if (ticket != generation || (!oneShot && (!autoPilot || !gemmaMode))) {
+                screenshot?.recycle()
+                return@capture
+            }
+            if (screenshot == null) {
+                gemmaError("Screenshot unavailable",oneShot)
+                return@capture
+            }
+            gemma.inspect(screenshot) { remote ->
+                handler.post {
+                    if (ticket != generation || (!oneShot && (!autoPilot || !gemmaMode))) {
+                        screenshot.recycle()
+                        return@post
+                    }
+                    val scene = remote.getOrNull()
+                    if(scene == null) {
+                        screenshot.recycle()
+                        gemmaError(remote.exceptionOrNull()?.message ?: "Ollama failed",oneShot)
+                        return@post
+                    }
+                    message("Gemma: ${scene.state} / ${scene.action}")
+                    when(scene.state) {
+                        "puzzle" -> {
+                            gemmaLastAction = null
+                            gemmaActionFrames = 0
+                            val saved = Settings.load(this,screenshot.width,screenshot.height)
+                            val bounds = when {
+                                scene.wheelBounds != null && scene.confidence >= .35 ->
+                                    scene.wheelBounds
+                                saved != null -> android.graphics.RectF(
+                                    saved.center.x-saved.radius,saved.center.y-saved.radius,
+                                    saved.center.x+saved.radius,saved.center.y+saved.radius
+                                )
+                                else -> null
+                            }
+                            if(bounds == null) {
+                                screenshot.recycle()
+                                gemmaError("Gemma could not locate the wheel",oneShot)
+                            } else {
+                                gemmaReadWheel(screenshot,bounds,ticket,oneShot)
+                            }
+                        }
+                        "menu","victory","ad" -> {
+                            screenshot.recycle()
+                            if(oneShot) {
+                                message("AI sees ${scene.state}. Tap AUTO to navigate.")
+                            } else {
+                                gemmaNavigate(scene)
+                            }
+                        }
+                        else -> {
+                            screenshot.recycle()
+                            if(oneShot) message("AI: unknown screen; open a puzzle")
+                            else gemmaWait("unknown screen")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun gemmaReadWheel(bitmap:Bitmap,bounds:android.graphics.RectF,
+                               ticket:Int,oneShot:Boolean) {
+        message("Gemma: reading enlarged wheel…")
+        gemma.readWheel(bitmap,bounds) { answer ->
+            handler.post {
+                if (ticket != generation || (!oneShot && (!autoPilot || !gemmaMode))) {
+                    bitmap.recycle()
+                    return@post
+                }
+                val wheel=answer.getOrNull()
+                if(wheel == null) {
+                    bitmap.recycle()
+                    gemmaError(answer.exceptionOrNull()?.message ?: "Wheel reading failed",oneShot)
+                    return@post
+                }
+                val letters=wheel.letters
+                val points=wheel.points
+                val dictionary=WordEngine.solve(letters)
+                if(dictionary.isEmpty() || dictionary.none{it.length==letters.length}) {
+                    bitmap.recycle()
+                    gemmaError("Read $letters, but no full-length dictionary word",oneShot)
+                    return@post
+                }
+                val cal=Calibration(wheel.center,wheel.radius*1.38f)
+                pendingCalibration=cal
+                pendingPoints=points
+                pendingWheel=WheelResult(points,wheel.confidence.toFloat(),
+                    letters.length,wheel.center,wheel.radius)
+                pending=letters
+                glyphSamples=emptyList()
+                // Gemma returns one estimate; human review remains available.
+                uncertainSlots=emptyList()
+                scanPreview?.recycle()
+                scanPreview=Bitmap.createBitmap(bitmap,
+                    wheel.screenshotCrop.left,wheel.screenshotCrop.top,
+                    wheel.screenshotCrop.width(),wheel.screenshotCrop.height())
+                scanPreviewOrigin=Spot(wheel.screenshotCrop.left.toFloat(),
+                    wheel.screenshotCrop.top.toFloat())
+                bitmap.recycle()
+                // Model coordinate grounding is approximate, so AUTO requires
+                // higher self-reported confidence before performing any swipe.
+                if(wheel.confidence < .72) {
+                    message("AI uncertain: $letters — review positions")
+                    if(oneShot) showReview()
+                    else gemmaError("wheel confidence too low",false)
+                    return@post
+                }
+                gemmaFailures=0
+                gemmaIdleCount=0
+                message("Gemma: $letters • ${dictionary.size} words")
+                if(oneShot) showReview() else startSolving(letters)
+            }
+        }
+    }
+
+    private fun gemmaNavigate(scene:GemmaClient.Scene) {
+        if (!autoPilot || !gemmaMode) return
+        val desired=when(scene.state) {
+            "menu" -> "level"
+            "victory" -> "skip"
+            "ad" -> "close_ad"
+            else -> "none"
+        }
+        // Ads do not have a "skip" action until an actual close/skip
+        // affordance is visible. No arbitrary "X in top right" coordinates.
+        if(scene.action != desired || scene.point==null ||
+            scene.confidence < .79) {
+            gemmaWait(if(scene.state=="ad")"waiting for ad close/skip"
+                      else "button not confirmed")
+            return
+        }
+        val point=scene.point
+        val previous=gemmaLastAction
+        if(previous?.state==scene.state && previous.action==scene.action &&
+            previous.point!=null &&
+            hypot(previous.point.x-point.x,previous.point.y-point.y)<dp(60))
+            gemmaActionFrames++
+        else {
+            gemmaActionFrames=1
+            gemmaLastAction=scene
+        }
+        if(gemmaActionFrames<2) {
+            handler.postDelayed({if(autoPilot&&gemmaMode)gemmaInspect()},750)
+            return
+        }
+        gemmaActionFrames=0
+        gemmaLastAction=null
+        gemmaIdleCount=0
+        message("Gemma: tapping ${scene.action}")
+        tapAt(point.x,point.y) { good ->
+            if(!autoPilot || !gemmaMode) return@tapAt
+            if(!good) {
+                stopAutomation("Gemma tap failed")
+                return@tapAt
+            }
+            handler.postDelayed({
+                if(autoPilot&&gemmaMode) gemmaInspect()
+            },if(scene.state=="ad")1800 else 1550)
+        }
+    }
+
+    private fun gemmaWait(why:String) {
+        if(!autoPilot || !gemmaMode)return
+        gemmaLastAction=null
+        gemmaActionFrames=0
+        gemmaIdleCount++
+        message("Gemma: $why")
+        if(gemmaIdleCount >= 90) {
+            stopAutomation("AI paused: screen stayed unresolved")
+        } else {
+            handler.postDelayed({if(autoPilot&&gemmaMode)gemmaInspect()},2600)
+        }
+    }
+
+    private fun gemmaError(reason:String,oneShot:Boolean) {
+        if(oneShot) {
+            message("Gemma: ${reason.take(80)}")
+            return
+        }
+        if(!autoPilot||!gemmaMode)return
+        gemmaFailures++
+        message("Gemma retry $gemmaFailures/4: ${reason.take(60)}")
+        if(gemmaFailures>=4) {
+            stopAutomation("AI paused: ${reason.take(65)}")
+            if(pendingPoints.isNotEmpty()&&reviewPanel==null)showReview()
+        } else {
+            handler.postDelayed({if(autoPilot&&gemmaMode)gemmaInspect()},2300)
+        }
     }
 
     private fun autoRetry(reason: String) {
@@ -390,6 +616,14 @@ class WordscapesService : AccessibilityService() {
 
     /** A new level always begins in AUTO mode. Manual corrections are for one puzzle only. */
     private fun scan(manualCount: Int? = null) {
+        if(GemmaClient.enabled(this)) {
+            if(autoPilot && gemmaMode) {
+                message("AI handles scanning automatically")
+                return
+            }
+            gemmaInspect(oneShot = true)
+            return
+        }
         stop("Scanning wheel…")
         val ticket = generation
         correctedCount = manualCount
@@ -569,7 +803,7 @@ class WordscapesService : AccessibilityService() {
             if (autoPilot) {
                 // Could already be on the completion screen. Check rather than
                 // immediately restarting from the wrong state.
-                handler.postDelayed({ if(autoPilot) inspectScene(false) },700)
+                handler.postDelayed({ if(autoPilot) if(gemmaMode) gemmaInspect() else inspectScene(false) },700)
             } else showReview()
             return
         }
@@ -621,7 +855,7 @@ class WordscapesService : AccessibilityService() {
                         if (gone) {
                             stop("Level complete")
                             if (autoPilot)
-                                handler.postDelayed({ if(autoPilot) inspectScene(false) }, 1400)
+                                handler.postDelayed({ if(autoPilot) if(gemmaMode) gemmaInspect() else inspectScene(false) }, 1400)
                             else message("Level complete — advance manually")
                         }
                         else handler.postDelayed({ nextWord(ticket) }, 250)
