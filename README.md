@@ -6,7 +6,7 @@
 
 - AccessibilityService (opt-in) captures the game screen with `takeScreenshot()` and draws continuous finger gestures with `dispatchGesture()`.
 - **CAL (one time):** save only the wheel center and ring radius. No letter count is stored. Geometry scales to current screen resolution.
-- **SCAN (every new level):** automatically detect the current letter count and positions from a fresh screenshot using the saved geometry; run ML Kit OCR; show a numbered ring preview and editable letters. If a position is missing, use `− COUNT` or `+ COUNT` in review to rescan just this level. `AUTO` resets the count to detection. These buttons do not change calibration.
+- **SCAN (every new level):** automatically detect the current letter count and positions from a fresh screenshot using the saved geometry; run three ML Kit OCR passes per character (two crop sizes plus contrast processing) and compare against confirmed character templates learned on-device. By default, scans with consistent high-confidence letters immediately start solving. Uncertain scans show a numbered ring preview and editable letters. If a position is missing, use `− COUNT` or `+ COUNT` in review to rescan just this level. `AUTO` resets the count to detection. These buttons do not change calibration.
 - **RUN:** uses a bundled offline word list (84,377 alphabetic entries, 3–8 characters) plus offline word-frequency rankings to create permutations, preferring familiar words. It also optionally fetches extra candidates from Datamuse (best-effort, in the background). Dispatches continuous swipes, one candidate at a time, then checks whether the wheel disappeared. Two captures must agree before stopping.
 - **STOP:** immediately cancels the remaining queue.\n- **HIDE:** cancels the queue, removes the floating bar and review editor completely, and saves the hidden state across service restarts. The Accessibility Service remains enabled. Reopen Wordscapes Auto and tap **SHOW FLOATING CONTROLS** to restore. Does **not** skip ads or advance levels.
 
@@ -18,7 +18,7 @@
 4. Open app → tap **Enable Accessibility Service** → enable **Wordscapes Auto accessibility**. If Android blocks the sideloaded service, go to Settings → Apps → Wordscapes Auto → ⋮ → **Allow restricted settings** (when that option exists), then retry.
 5. Launch a Wordscapes level. Floating buttons appear near the top: `CAL`, `SCAN`, `STOP`, `HIDE`.
 6. **Once:** tap **CAL**, select the center of the wheel, move the radius slider until the yellow circle passes through the letters, then **SAVE**.
-7. **Each level:** tap **SCAN**. Check the detected positions/count in the ring preview and correct any `?` or mistaken letter in the editor. Use `− COUNT` or `+ COUNT` for a missed/extra letter **without recalibrating**. Press **RUN** or **STOP**.
+7. **Each level:** tap **SCAN**. If all letters have consistent recognition and the detector is confident, the bot starts solving immediately (unless you disable the **Auto-run after confident SCAN** checkbox on the main screen). Otherwise, review and correct the text; confirmed letters improve the local recognizer over time. Use `− COUNT` or `+ COUNT` for a missed/extra letter **without recalibrating**. Press **RUN** or **STOP**.
 8. Advance through level results and ads yourself. On the next puzzle tap **SCAN again**; the letter count resets to automatic detection.
 
 ## Design and privacy
@@ -84,3 +84,12 @@ Wheel center and radius persist across app launches. The old saved letter-count 
 ## Version 1.2 — hide / restore the floating overlay
 
 Tap **HIDE** on the bar to stop solving and remove both the bar and any review overlay. The hidden state persists across Accessibility Service restarts. Open the app normally and tap **SHOW FLOATING CONTROLS** to restore without navigating through Accessibility settings. Hiding does not revoke Accessibility permissions.
+
+## Version 1.3 — improved OCR and optional automatic solving
+
+- Uses **three independently processed views** of each letter rather than a single ML Kit crop. A vote determines the initial reading.
+- Learns normalized letter-shape templates **only from letters the user explicitly confirms by tapping RUN in review mode**; no remote training or screenshots uploaded. Templates remain in the app's private preferences.
+- Learned examples can resolve recurring ML Kit errors without blanket forced substitutions of S/F/E/I. Ambiguous results still require review.
+- A new **Auto-run after confident SCAN** checkbox is enabled by default. Confident scans automatically proceed to swipe words. Uncertain scans continue to the manual correction panel; the setting can be turned off.
+- When the word candidate queue is exhausted, the last letter review is offered again.
+- This is a heuristic recognizer, not a guaranteed fix for every Wordscapes font or background. Actual phone testing is still needed.

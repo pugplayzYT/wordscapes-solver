@@ -54,10 +54,28 @@ class MainActivity : Activity() {
             }
         }
         root.addView(showControlsButton, LinearLayout.LayoutParams(-1, dp(62)))
+        root.addView(CheckBox(this).apply {
+            text = "Auto-run after confident SCAN"
+            textSize = 16f
+            isChecked = getSharedPreferences("wordscapes.ocr", MODE_PRIVATE)
+                .getBoolean("auto_run", true)
+            setOnCheckedChangeListener { _, checked ->
+                getSharedPreferences("wordscapes.ocr", MODE_PRIVATE)
+                    .edit().putBoolean("auto_run", checked).apply()
+            }
+        }, LinearLayout.LayoutParams(-1, dp(54)))
+        root.addView(TextView(this).apply {
+            text = "When letters agree across OCR passes, SCAN starts solving. " +
+                "Uncertain results open the correction editor. Confirmed corrections " +
+                "teach the app to recognize those letter shapes next time."
+            textSize = 13f
+            setTextColor(Color.rgb(91, 105, 123))
+            setPadding(0, 0, 0, dp(12))
+        })
         val instructions = TextView(this).apply {
             text = "2 · Tap SHOW CONTROLS if hidden, then open Wordscapes:\n\n" +
                 "CAL  — One-time center + radius setup\n\n" +
-                "SCAN — Every level, auto-detect count + letters, then review\n\n" +
+                "SCAN — Read letters; auto-run if confident, otherwise review\n\n" +
                 "RUN  — Swipe possible words until the wheel disappears\n\n" +
                 "STOP — Cancel immediately\n\n" +
                 "HIDE — Stop and remove all floating controls\n\n" +

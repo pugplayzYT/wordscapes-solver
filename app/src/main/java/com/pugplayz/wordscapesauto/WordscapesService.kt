@@ -34,6 +34,8 @@ class WordscapesService : AccessibilityService() {
     private var pendingPoints: List<Spot> = emptyList()
     private var pendingCalibration: Calibration? = null
     private var correctedCount: Int? = null
+    private var glyphSamples: List<GlyphMemory.Sample?> = emptyList()
+    private var uncertainSlots: List<Int> = emptyList()
     private var solveWords: List<String> = emptyList()
     private var solveIndex = 0
     private var actualLetters = ""
@@ -178,6 +180,8 @@ class WordscapesService : AccessibilityService() {
         val ticket = generation
         correctedCount = manualCount
         pending = ""
+        glyphSamples = emptyList()
+        uncertainSlots = emptyList()
         pendingPoints = emptyList()
         pendingCalibration = null
         removeReview()
@@ -203,12 +207,24 @@ class WordscapesService : AccessibilityService() {
                 pendingPoints = result.points
                 pendingCalibration = cal
                 message("Reading ${result.inferredCount} letters…")
-                ocr.recognize(bitmap, result.points, cal.radius) { letters ->
+                ocr.recognize(this, bitmap, result.points, cal.radius) { reading ->
                     bitmap.recycle()
                     if (ticket == generation) {
-                        pending = letters
-                        message(if (result.confidence < .20f) "Check positions (${result.inferredCount})" else "OCR: $pending")
-                        showReview()
+                        pending = reading.text
+                        glyphSamples = reading.samples
+                        uncertainSlots = reading.uncertainPositions
+                        val autoRun = getSharedPreferences("wordscapes.ocr", MODE_PRIVATE)
+                            .getBoolean("auto_run", true)
+                        if (autoRun && reading.allConfident && result.confidence >= .20f) {
+                            message("OCR checked: $pending — solving…")
+                            startSolving(pending)
+                        } else {
+                            val uncertain = uncertainSlots.size
+                            message(if (uncertain > 0)
+                                "$uncertain uncertain — review $pending"
+                                else "Detected: $pending — review")
+                            showReview()
+                        }
                     }
                 }
             }
@@ -223,7 +239,7 @@ class WordscapesService : AccessibilityService() {
             setBackgroundColor(android.graphics.Color.argb(250, 241, 247, 255))
         }
         panel.addView(TextView(this).apply {
-            text = "${pendingPoints.size} letters (${if (correctedCount == null) "AUTO" else "count corrected"}) — fix OCR mistakes:"
+            text = "${pendingPoints.size} letters • ${uncertainSlots.size} uncertain • correct if necessary:"
             textSize = 14f
         })
         val lettersField = EditText(this).apply {
@@ -258,6 +274,8 @@ class WordscapesService : AccessibilityService() {
             if (corrected.length != pendingPoints.size || corrected.any { it !in 'A'..'Z' }) {
                 Toast.makeText(this@WordscapesService, "Enter exactly ${pendingPoints.size} letters A-Z", Toast.LENGTH_LONG).show()
             } else {
+                // These letters are confirmed by the user: teach their actual shapes.
+                GlyphMemory.learn(this@WordscapesService, glyphSamples, corrected)
                 removeReview()
                 startSolving(corrected)
             }
@@ -306,7 +324,8 @@ class WordscapesService : AccessibilityService() {
     private fun nextWord(ticket: Int) {
         if (ticket != generation || !isRunning) return
         if (solveIndex >= solveWords.size) {
-            stop("Words exhausted. Recheck OCR.")
+            stop("Words exhausted. Review OCR or letter positions.")
+            showReview()
             return
         }
         val word = solveWords[solveIndex++]
