@@ -54,7 +54,7 @@ object WheelDetector {
             sum / 11f
         }
         val high = smooth.maxOrNull() ?: 0f
-        if (high < .10f) return fallback(center, radius, overrideCount ?: 4)
+        // A blank screen must never be interpreted as a fabricated four-letter wheel.\n        if (high < .10f) return WheelResult(emptyList(), 0f, 0)
 
         // First count independent angular peaks. This avoids the harmonic trap:
         // a six-letter ring can otherwise look like a strong three-letter ring.
