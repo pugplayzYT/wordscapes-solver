@@ -83,10 +83,13 @@ object WordEngine {
         require(cleaned.length in 3..12 && cleaned.all { it in 'A'..'Z' })
         return (dictionary ?: emptySet()).asSequence()
             .filter { it.length <= cleaned.length && isValid(it, cleaned) }
-            .sortedWith(compareByDescending<String> {
-                ln((frequency[it] ?: 0).toDouble() + 1.0) + it.length * .40 +
-                    if (it.lowercase(Locale.US) in common) 1.2 else 0.0
-            }.thenByDescending { it.length }.thenBy { it })
+            // Keep full-length anagrams in the candidate queue even when
+            // short high-frequency words would otherwise fill the limit.
+            .sortedWith(compareByDescending<String> { it.length == cleaned.length }
+                .thenByDescending {
+                    ln((frequency[it] ?: 0).toDouble() + 1.0) + it.length * .40 +
+                        if (it.lowercase(Locale.US) in common) 1.2 else 0.0
+                }.thenByDescending { it.length }.thenBy { it })
             .take(limit).toList()
     }
 
