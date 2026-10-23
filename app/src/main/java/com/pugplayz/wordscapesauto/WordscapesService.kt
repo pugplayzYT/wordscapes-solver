@@ -24,6 +24,7 @@ class WordscapesService : AccessibilityService() {
     private lateinit var wm: WindowManager
     private val handler = Handler(Looper.getMainLooper())
     private val ocr = LetterReader()
+    private val wheelVision = WheelVision()
     private lateinit var topBar: LinearLayout
     private val overlayStore get() = getSharedPreferences("wordscapes.overlay", android.content.Context.MODE_PRIVATE)
     private lateinit var status: TextView
@@ -61,6 +62,7 @@ class WordscapesService : AccessibilityService() {
         if (::topBar.isInitialized && topBar.isAttachedToWindow) try { wm.removeView(topBar) } catch (_: Exception) {}
         baselineImage?.recycle(); baselineImage = null
         ocr.close()
+        wheelVision.close()
         instance = null
         super.onDestroy()
     }
@@ -188,61 +190,55 @@ class WordscapesService : AccessibilityService() {
         pendingCalibration = null
         pendingWheel = null
         removeReview()
-        if (!Settings.hasCalibration(this)) { message("Set search box with CAL once"); return }
+        if (!Settings.hasCalibration(this)) { message("Set center + search radius with CAL once"); return }
         handler.postDelayed({
             if (ticket != generation) return@postDelayed
             capture { bitmap ->
                 if (ticket != generation) { bitmap?.recycle(); return@capture }
                 if (bitmap == null) return@capture
-                // Saved box remains fixed; EACH scan searches for the new wheel
-                // center, radius, character count and angular letter positions.
                 val cal = Settings.load(this, bitmap.width, bitmap.height)
                 if (cal == null) {
                     bitmap.recycle()
-                    message("Invalid search box — tap CAL")
+                    message("Search circle invalid — tap CAL")
                     return@capture
                 }
-                message("Locating wheel inside saved box…")
-                Thread {
-                    val result = try {
-                        WheelDetector.detectInBox(bitmap, cal.bounds, manualCount)
-                    } catch (_: Exception) {
-                        WheelResult(emptyList(), 0f, 0)
-                    }
+                message("Locating actual letters…")
+                wheelVision.locate(bitmap, cal, manualCount) { reading ->
                     handler.post {
                         if (ticket != generation) {
                             bitmap.recycle()
-                        } else if (result.points.size !in WheelDetector.MIN_LETTERS..WheelDetector.MAX_LETTERS) {
+                        } else if (reading == null) {
                             bitmap.recycle()
-                            message("No wheel located — check saved CAL box")
+                            message("No reliable letter ring found — RESCAN / CAL")
                         } else {
+                            val result = reading.wheel
                             pendingPoints = result.points
                             pendingCalibration = cal
                             pendingWheel = result
-                            message("Reading ${result.inferredCount} letters…")
-                            ocr.recognize(this, bitmap, result.points, result.radius) { reading ->
+                            message("Reading ${result.inferredCount} real positions…")
+                            ocr.recognize(this, bitmap, result.points, result.radius,
+                                reading.hints) { letters ->
                                 bitmap.recycle()
                                 if (ticket == generation) {
-                                    pending = reading.text
-                                    glyphSamples = reading.samples
-                                    uncertainSlots = reading.uncertainPositions
+                                    pending = letters.text
+                                    glyphSamples = letters.samples
+                                    uncertainSlots = letters.uncertainPositions
                                     val autoRun = getSharedPreferences("wordscapes.ocr", MODE_PRIVATE)
                                         .getBoolean("auto_run", true)
-                                    if (autoRun && reading.allConfident && result.confidence >= .30f) {
-                                        message("OCR checked: $pending — solving…")
+                                    // Don't auto-swipe unless the positions are
+                                    // strongly grounded AND OCR inputs agree.
+                                    if (autoRun && letters.allConfident && result.confidence >= .86f) {
+                                        message("Verified $pending — solving…")
                                         startSolving(pending)
                                     } else {
-                                        val uncertain = uncertainSlots.size
-                                        message(if (uncertain > 0)
-                                            "$uncertain uncertain — review $pending"
-                                            else "Detected: $pending — review")
+                                        message("${uncertainSlots.size} uncertain • OCR anchors: ${reading.identified}/${result.inferredCount}")
                                         showReview()
                                     }
                                 }
                             }
                         }
                     }
-                }.start()
+                }
             }
         }, 300)
     }
@@ -399,13 +395,30 @@ class WordscapesService : AccessibilityService() {
     }
 
     private fun wheelGone(bitmap: Bitmap, cal: Calibration): Boolean {
-        // We require both visual change AND loss of the ring's normal text pattern.
-        val baseline = baselineImage ?: return false
-        val geometry = activeWheel
-        val change = meanDiff(baseline, bitmap, geometry?.center ?: cal.center,
-            geometry?.radius?.takeIf { it > 0f } ?: cal.radius)
-        val visualGone = !WheelDetector.ringStillPresent(bitmap, cal.bounds)
-        return change > 27f && visualGone
+        // Compare actual previously detected glyph patches rather than asking
+        // the old brightness-peak detector to guess an imaginary ring.
+        val original = baselineImage ?: return false
+        val wheel = activeWheel ?: return false
+        val changed = meanDiff(original,bitmap,wheel.center ?: cal.center,
+            wheel.radius.takeIf { it>0f } ?: cal.radius*.70f)
+        if (changed < 23f || activePoints.isEmpty()) return false
+        var disappeared = 0
+        val patch=max(5,(wheel.radius*.09f).toInt())
+        for(p in activePoints) {
+            var delta=0L;var pixels=0
+            for(y in -patch..patch step 3)for(x in -patch..patch step 3) {
+                val xx=(p.x+x).roundToInt();val yy=(p.y+y).roundToInt()
+                if(xx !in 0 until bitmap.width || yy !in 0 until bitmap.height ||
+                   xx !in 0 until original.width || yy !in 0 until original.height)continue
+                val a=original.getPixel(xx,yy);val b=bitmap.getPixel(xx,yy)
+                delta+=abs(android.graphics.Color.red(a)-android.graphics.Color.red(b))
+                delta+=abs(android.graphics.Color.green(a)-android.graphics.Color.green(b))
+                delta+=abs(android.graphics.Color.blue(a)-android.graphics.Color.blue(b))
+                pixels+=3
+            }
+            if(pixels>0 && delta.toFloat()/pixels>24f)disappeared++
+        }
+        return disappeared >= ceil(activePoints.size*.70f).toInt()
     }
 
     private fun meanDiff(a: Bitmap, b: Bitmap, center: Spot, r: Float): Float {
