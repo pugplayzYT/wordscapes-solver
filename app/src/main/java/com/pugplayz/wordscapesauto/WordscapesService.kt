@@ -85,9 +85,6 @@ class WordscapesService : AccessibilityService() {
     private var glyphSamples: List<GlyphMemory.Sample?> = emptyList()
     private var uncertainSlots: List<Int> = emptyList()
     private var solveWords: List<String> = emptyList()
-    private var speedBatches=WordEngine.LevelBatches(
-        emptyList(),emptyList(),emptyList())
-    private var speedPhase=0
     private var aiCandidateWords: List<String> = emptyList()
     // One puzzle can require many separate AI suggestion batches.
     // There is NO total word cap in Gemma mode. Pause only after several
@@ -1429,38 +1426,26 @@ class WordscapesService : AccessibilityService() {
     private fun startSolving(letters: String) {
         val cal=pendingCalibration ?:run {message("No scanned wheel");return}
         actualLetters=letters
-        if(autoPilot){autoRetries=0;autoUiRetries=0}
+        if(autoPilot) {autoRetries=0;autoUiRetries=0}
         activePoints=pendingPoints.toList()
         activeCalibration=cal
         activeWheel=pendingWheel
 
-        // No AI-generated word candidates. Most importantly, do NOT sort
-        // every rare full-length anagram to the front of the swipe queue.
-        // Speed mode uses only a small, carefully ranked dictionary subset.
-        speedBatches=WordEngine.solveForLevel(letters)
-        speedPhase=0
-        solveWords=speedBatches.likely
+        // Dictionary-only word selection (including when Gemma vision
+        // reads the letter wheel). No LLM word generation or Datamuse.
+        // The bundled frequency list ranks real common words first.
+        solveWords=WordEngine.solve(letters,limit=260)
         solveIndex=0
         if(solveWords.isEmpty()) {
-            // If a puzzle has uncommon letters, the core shortlist may
-            // legitimately be empty. Fall back to plausible words.
-            if(speedBatches.plausible.isNotEmpty()){
-                solveWords=speedBatches.plausible
-                speedPhase=1
-            }else if(speedBatches.lastResort.isNotEmpty()){
-                solveWords=speedBatches.lastResort
-                speedPhase=2
-            }else{
-                message("No likely puzzle answers for $letters")
-                if(autoPilot)stopAutomation("Check wheel letters: $letters")
-                else showReview()
-                return
-            }
+            message("Dictionary found no playable words for $letters")
+            if(autoPilot)stopAutomation("Check wheel letters: $letters")
+            else showReview()
+            return
         }
         isRunning=true
         generation++
         val ticket=generation
-        message("$letters • FAST: ${solveWords.size} common words")
+        message("$letters • ${solveWords.size} ranked dictionary words")
         baselineImage?.recycle()
         baselineImage=null
         capture { bitmap ->
@@ -1476,44 +1461,35 @@ class WordscapesService : AccessibilityService() {
     }
 
     private fun nextWord(ticket: Int) {
-        if(ticket!=generation || !isRunning)return
-        if(solveIndex>=solveWords.size){
-            // Only broaden the search when the puzzle has demonstrably NOT
-            // completed. Each stage contains progressively less common
-            // (but still plausible) words. The rare bulk dictionary list
-            // is never blindly appended.
-            val nextBatch=when(speedPhase){
-                0 -> speedBatches.plausible
-                1 -> speedBatches.lastResort
-                else -> emptyList()
+        if (ticket != generation || !isRunning) return
+        if (solveIndex >= solveWords.size) {
+            // Try the remaining ranked dictionary words as a SECOND batch.
+            // Never ask the language model for more speculative anagrams.
+            if(gemmaMode && autoPilot && solveWords.size<850) {
+                val additional=WordEngine.solve(actualLetters,limit=850)
+                    .filter{it !in solveWords}
+                if(additional.isNotEmpty()) {
+                    solveWords=solveWords+additional
+                    message("Dictionary extended by ${additional.size} words")
+                    handler.postDelayed({nextWord(ticket)},160)
+                    return
+                }
             }
-            speedPhase++
-            if(nextBatch.isNotEmpty()) {
-                solveWords=solveWords+nextBatch.filter{it !in solveWords}
-                message("Still unsolved • using ${if(speedPhase==1)"less common" else "fallback"} words")
-                handler.postDelayed({nextWord(ticket)},140)
-                return
-            }
-            if(speedPhase<3) {
-                handler.postDelayed({nextWord(ticket)},140)
-                return
-            }
-            stop("Likely answers exhausted for $actualLetters")
-            if(autoPilot)stopAutomation("FAST exhausted; check wheel letters")
+            stop("Dictionary exhausted for $actualLetters • check letters")
             if(reviewPanel==null)showReview()
+            if(autoPilot)stopAutomation("Dictionary exhausted; review wheel letters")
             return
         }
-        val word=solveWords[solveIndex++]
-        val pathPoints=WordEngine.path(word,actualLetters,activePoints)
-        if(pathPoints==null || pathPoints.size<3) {
-            handler.post{nextWord(ticket)}
-            return
+        val word = solveWords[solveIndex++]
+        val pathPoints = WordEngine.path(word, actualLetters, activePoints)
+        if (pathPoints == null || pathPoints.size < 3) {
+            handler.post { nextWord(ticket) }; return
         }
-        message("${solveIndex}/${solveWords.size} ${if(speedPhase==0)"FAST" else "FALLBACK"}: $word")
-        swipe(pathPoints){completed->
-            if(ticket!=generation || !isRunning)return@swipe
-            if(!completed){stop("Gesture failed: check service");return@swipe}
-            handler.postDelayed({verifyAfterWord(ticket)},720)
+        message("${solveIndex}/${solveWords.size}: $word")
+        swipe(pathPoints) { completed ->
+            if (ticket != generation || !isRunning) return@swipe
+            if (!completed) { stop("Gesture failed: check service"); return@swipe }
+            handler.postDelayed({ verifyAfterWord(ticket) }, 720)
         }
     }
 

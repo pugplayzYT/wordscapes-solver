@@ -1,3 +1,27 @@
+# v2.12 — Roll back v2.11 FAST dictionary filtering
+
+The user requested the previous, long-running Wordscapes solver back.
+This release **restores exactly the v2.10 implementation of
+WordEngine.kt and WordscapesService.kt**, without reverting later
+diagnostic functionality or changing Royal Match.
+
+- Removed the v2.11 three-stage FAST/plausible/last-resort shortlist.
+- Removed the v2.11 custom "bad acronym" blacklist and frequency
+  thresholds; a required unusual word must not be skipped merely
+  because a search-frequency list omitted it.
+- Restored the earlier dictionary path: 260 initially ranked
+  candidates, with an expanded ranked list of up to 850 when needed.
+- Restored its original full-length-anagram prioritization, including
+  the normal screenshot check after each attempted word.
+- Preserves Gemma wheel reading, calibration, dark screen and five
+  STOP taps to unlock AI DEBUG (all existed in v2.10).
+
+There are still uncommon words in the dictionary. The purpose of
+this rollback is to restore the user's last established behavior,
+rather than repeatedly changing which words are considered acceptable.
+
+---
+
 # v2.11 — Fast Wordscapes level completion (common answers first)
 
 The previous dictionary solver sorted EVERY full-length anagram ahead
