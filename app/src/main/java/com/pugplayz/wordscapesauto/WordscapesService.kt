@@ -67,6 +67,9 @@ class WordscapesService : AccessibilityService() {
     private var stableUiFrames = 0
     private lateinit var topBar: LinearLayout
     private lateinit var autoControl: Button
+    private var debugRow:LinearLayout?=null
+    private var stopTapCount=0
+    private var stopTapStart=0L
     private val overlayStore get() = getSharedPreferences("wordscapes.overlay", android.content.Context.MODE_PRIVATE)
     private lateinit var status: TextView
     private var reviewPanel: LinearLayout? = null
@@ -187,7 +190,7 @@ class WordscapesService : AccessibilityService() {
         })
         mainRow.addView(toolbarButton("SCAN", blue, 44) { scan() })
         mainRow.addView(toolbarButton("STOP", danger, 44) {
-            stopAutomation("Stopped by user")
+            onStopTapped()
         })
         topBar.addView(mainRow, LinearLayout.LayoutParams(-1, dp(44)))
 
@@ -219,10 +222,64 @@ class WordscapesService : AccessibilityService() {
         utilityRow.addView(status, LinearLayout.LayoutParams(0, dp(38), 1f))
         topBar.addView(utilityRow, LinearLayout.LayoutParams(-1, dp(41)))
 
+        // Five quick STOP taps unlock this hidden troubleshooting row.
+        // The normal STOP function still stops automation every time.
+        val debug=LinearLayout(this).apply {
+            orientation=LinearLayout.HORIZONTAL
+            gravity=Gravity.CENTER
+            visibility=if(overlayStore.getBoolean("debug_unlocked",false))
+                View.VISIBLE else View.GONE
+        }
+        val debugButton=toolbarButton("DEBUG · AI REQUESTS / RESPONSES",
+            android.graphics.Color.rgb(93,69,165),42){
+            stopAutomation("Opening AI debug logs")
+            setDebugViewing(true)
+            try {
+                startActivity(Intent(this,AiDebugActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }catch(e:Exception){
+                setDebugViewing(false)
+                message("Cannot open DEBUG: ${e.message?.take(50)}")
+            }
+        }
+        debug.addView(debugButton,LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,dp(42)))
+        debugRow=debug
+        topBar.addView(debug,LinearLayout.LayoutParams(-1,
+            LinearLayout.LayoutParams.WRAP_CONTENT))
+
         val screenWidth = resources.displayMetrics.widthPixels
         val barWidth = min(screenWidth - dp(16), dp(560)).coerceAtLeast(dp(210))
         wm.addView(topBar, overlayParams(barWidth, -2, false, dp(16)))
         updateAutoControl()
+    }
+
+    private fun onStopTapped() {
+        stopAutomation("Stopped by user")
+        if(overlayStore.getBoolean("debug_unlocked",false))return
+        val now=android.os.SystemClock.uptimeMillis()
+        // Five taps in twelve seconds. No secret gesture interferes
+        // with STOP's primary job of cancelling active automation.
+        if(now-stopTapStart>12000L || stopTapCount==0) {
+            stopTapStart=now
+            stopTapCount=0
+        }
+        stopTapCount++
+        if(stopTapCount>=5) {
+            overlayStore.edit().putBoolean("debug_unlocked",true).apply()
+            stopTapCount=0
+            debugRow?.visibility=View.VISIBLE
+            message("DEBUG unlocked · tap the purple DEBUG button")
+            Toast.makeText(this,"AI DEBUG UNLOCKED",Toast.LENGTH_LONG).show()
+        }else{
+            message("Stopped · debug unlock: $stopTapCount/5 STOP taps")
+        }
+    }
+
+    /** Prevent the floating game toolbar from covering the diagnostics. */
+    fun setDebugViewing(viewing:Boolean) {
+        if(::topBar.isInitialized && topBar.isAttachedToWindow)
+            topBar.visibility=if(viewing)View.GONE else View.VISIBLE
     }
 
     private fun updateAutoControl() {
