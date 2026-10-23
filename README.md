@@ -1,3 +1,38 @@
+# v2.9 — Restore successful multi-letter wheel recognition
+
+Regression fixed: v2.8 switched Gemma to a JSON `{"letters":"WORD"}`
+response even though the previous more reliable prompt asked for an array
+of individual wheel glyphs. On real Wordscapes screenshots it often
+returned **only one letter**.
+
+Improvements:
+- Restores the older per-letter array recognition:
+  `{"letters":[{"c":"E","x":500,"y":150}, ...]}`.
+- Counts and reads every visible wheel letter, including duplicates
+  when they are separate tiles. If the response has fewer than three
+  readable letters, it performs one alternate recognition attempt with
+  a larger image crop and a different direct character-counting prompt.
+- **Respects the CAL circle you highlighted** before the model's
+  potentially incorrect wheel rectangle. The previous logic
+  prioritized the model's rectangle, resulting in accidental tight
+  one-letter crops.
+- Keeps good model-detected glyph touch coordinates, rather than
+  throwing them away as in v2.8.
+- When Gemma repeats coordinates or omits some positions, it
+  preserves the transcribed letters and tries screenshot-based radial
+  fitting, with deterministic geometry as a last resort. It never
+  rejects letters with `Duplicated letter location`.
+- Word selection remains **entirely from the bundled dictionary**.
+  Gemma no longer generates candidate words. Royal Match mode is
+  unchanged.
+
+The model can still misread characters and some inferred touch
+positions may be imperfect; this release directly addresses both
+the one-character regression and the duplicated-coordinate errors
+without bringing back AI hallucinated word lists.
+
+---
+
 # v2.8 — Wordscapes offline dictionary restored; simpler OCR geometry
 
 Wordscapes mode no longer asks the language model to make up words.
