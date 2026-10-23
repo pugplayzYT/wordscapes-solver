@@ -112,7 +112,18 @@ class WheelVision {
                 // isolate actual bright/dark letter-shaped connected regions.
                 Thread {
                     val candidates=components(image,area)
-                    val result=fit(image,area,raw+second,candidates,requestedCount)
+                    val observations=raw+second
+                    val fitted=fit(image,area,observations,candidates,requestedCount)
+                    // The two full-frame OCR passes are useful hints, not
+                    // hard prerequisites for ever trying per-letter OCR.
+                    val result=fitted ?: RadialFallback.estimate(
+                        image,area,requestedCount,observations.map{it.at}
+                    )?.let { estimated ->
+                        Reading(estimated.wheel,
+                            List(estimated.wheel.inferredCount){null},
+                            estimated.anchors,candidates.size,
+                            estimated.wheel.inferredCount)
+                    }
                     callback(result)
                 }.start()
             }
