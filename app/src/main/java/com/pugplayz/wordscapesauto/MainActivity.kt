@@ -65,7 +65,7 @@ class MainActivity : Activity() {
             }
         }, LinearLayout.LayoutParams(-1, dp(54)))
         root.addView(TextView(this).apply {
-            text = "When letters agree across OCR passes, SCAN starts solving. " +
+            text = "Only when letter positions and OCR agree, SCAN starts solving. " +
                 "Uncertain results open the correction editor. Confirmed corrections " +
                 "teach the app to recognize those letter shapes next time."
             textSize = 13f
@@ -74,8 +74,8 @@ class MainActivity : Activity() {
         })
         val instructions = TextView(this).apply {
             text = "2 · Tap SHOW CONTROLS if hidden, then open Wordscapes:\n\n" +
-                "CAL  — One-time rectangle around the wheel\n\n" +
-                "SCAN — Auto-find wheel size, position, 3–12 letters, then read\n\n" +
+                "CAL  — Tap wheel center + slider to enclose the whole wheel\n\n" +
+                "SCAN — Find real letter shapes + OCR boxes inside the circle\n\n" +
                 "RUN  — Swipe possible words until the wheel disappears\n\n" +
                 "STOP — Cancel immediately\n\n" +
                 "HIDE — Stop and remove all floating controls\n\n" +
