@@ -263,7 +263,8 @@ class GemmaClient(private val context: Context) {
                             failure="Gemma anagram JSON invalid"
                             continue
                         }
-                    val array=json.optJSONArray("words") ?:run {
+                    val array=json.optJSONArray("words")
+                    if(array==null) {
                         failure="Gemma anagram response has no words"
                         continue
                     }
