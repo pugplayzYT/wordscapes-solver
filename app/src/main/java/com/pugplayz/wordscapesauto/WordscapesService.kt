@@ -29,9 +29,10 @@ class WordscapesService : AccessibilityService() {
     private var reviewPanel: LinearLayout? = null
     private var isRunning = false
     private var generation = 0
-    private var currentImage: Bitmap? = null
     private var pending = ""
     private var pendingPoints: List<Spot> = emptyList()
+    private var pendingCalibration: Calibration? = null
+    private var correctedCount: Int? = null
     private var solveWords: List<String> = emptyList()
     private var solveIndex = 0
     private var actualLetters = ""
@@ -53,7 +54,6 @@ class WordscapesService : AccessibilityService() {
         stop("Service disabled")
         removeReview()
         if (::topBar.isInitialized) try { wm.removeView(topBar) } catch (_: Exception) {}
-        currentImage?.recycle(); currentImage = null
         baselineImage?.recycle(); baselineImage = null
         ocr.close()
         instance = null
@@ -147,29 +147,42 @@ class WordscapesService : AccessibilityService() {
         }, 220)
     }
 
-    private fun scan() {
-        stop("Scanning letters…")
+    /** A new level always begins in AUTO mode. Manual corrections are for one puzzle only. */
+    private fun scan(manualCount: Int? = null) {
+        stop("Scanning wheel…")
         val ticket = generation
+        correctedCount = manualCount
+        pending = ""
+        pendingPoints = emptyList()
+        pendingCalibration = null
         removeReview()
-        val cal = Settings.load(this)
-        if (cal == null) { message("Tap CAL first"); return }
+        if (!Settings.hasCalibration(this)) { message("Set center + radius with CAL once"); return }
         handler.postDelayed({
             if (ticket != generation) return@postDelayed
             capture { bitmap ->
                 if (ticket != generation) { bitmap?.recycle(); return@capture }
                 if (bitmap == null) return@capture
-                val result = WheelDetector.detect(bitmap, cal.center, cal.radius, cal.countOverride)
+                // One saved center and radius are reused, scaled for current screenshot resolution.
+                val cal = Settings.load(this, bitmap.width, bitmap.height)
+                if (cal == null) {
+                    bitmap.recycle()
+                    message("Calibration outside screenshot — use CAL")
+                    return@capture
+                }
+                val result = WheelDetector.detect(bitmap, cal.center, cal.radius, manualCount)
                 if (result.points.size !in 3..8) {
-                    bitmap.recycle(); message("No wheel found — tap CAL"); return@capture
+                    bitmap.recycle()
+                    message("No letters detected — check puzzle screen")
+                    return@capture
                 }
                 pendingPoints = result.points
+                pendingCalibration = cal
                 message("Reading ${result.inferredCount} letters…")
                 ocr.recognize(bitmap, result.points, cal.radius) { letters ->
                     bitmap.recycle()
                     if (ticket == generation) {
                         pending = letters
-                        if (result.confidence < .20f) message("Low-confidence positions — check CAL")
-                        else message("OCR: $pending")
+                        message(if (result.confidence < .20f) "Check positions (${result.inferredCount})" else "OCR: $pending")
                         showReview()
                     }
                 }
@@ -185,7 +198,7 @@ class WordscapesService : AccessibilityService() {
             setBackgroundColor(android.graphics.Color.argb(250, 241, 247, 255))
         }
         panel.addView(TextView(this).apply {
-            text = "Detected letters (${pendingPoints.size}) — correct any ? / mistakes:"
+            text = "${pendingPoints.size} letters (${if (correctedCount == null) "AUTO" else "count corrected"}) — fix OCR mistakes:"
             textSize = 14f
         })
         val lettersField = EditText(this).apply {
@@ -198,10 +211,22 @@ class WordscapesService : AccessibilityService() {
                 android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
         }
         panel.addView(lettersField, LinearLayout.LayoutParams(-1, dp(54)))
+        // Review the newly detected positions without visiting calibration.
+        panel.addView(RingKeyView(pendingPoints, pendingCalibration, pending),
+            LinearLayout.LayoutParams(-1, dp(126)))
         panel.addView(TextView(this).apply {
-            text = "Order follows the numbered markers clockwise. Review before swiping."
+            text = "Wrong NUMBER of letters? Use −/+ (rescans this level). Wrong LETTER? Edit above."
             textSize = 12f
         })
+        val countRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        fun countButton(label: String, action: () -> Unit) {
+            countRow.addView(Button(this).apply { text = label; setOnClickListener { action() } },
+                LinearLayout.LayoutParams(0, dp(46), 1f))
+        }
+        countButton("− COUNT") { scan((pendingPoints.size - 1).coerceIn(3, 8)) }
+        countButton("AUTO") { scan() }
+        countButton("+ COUNT") { scan((pendingPoints.size + 1).coerceIn(3, 8)) }
+        panel.addView(countRow)
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         row.addView(Button(this).apply { text = "RUN"; setOnClickListener {
             val corrected = lettersField.text.toString().trim().uppercase(Locale.US)
@@ -226,7 +251,7 @@ class WordscapesService : AccessibilityService() {
     }
 
     private fun startSolving(letters: String) {
-        val cal = Settings.load(this) ?: run { message("No calibration"); return }
+        val cal = pendingCalibration ?: run { message("No scanned wheel"); return }
         actualLetters = letters
         activePoints = pendingPoints.toList()
         activeCalibration = cal
@@ -335,6 +360,34 @@ class WordscapesService : AccessibilityService() {
                 count += 3
             }
         return if (count > 0) total.toFloat() / count else 0f
+    }
+
+    /** Miniature clockwise letter-position key: number and OCR guess per position. */
+    private inner class RingKeyView(
+        private val positions: List<Spot>,
+        private val calibration: Calibration?,
+        private val letters: String
+    ) : View(this@WordscapesService) {
+        private val dot = android.graphics.Paint(3).apply { color = android.graphics.Color.rgb(24, 96, 147) }
+        private val ink = android.graphics.Paint(3).apply {
+            color = android.graphics.Color.WHITE
+            textAlign = android.graphics.Paint.Align.CENTER
+            textSize = dp(12).toFloat()
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+        }
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            val cal = calibration ?: return
+            val scale = (height * .37f) / cal.radius.coerceAtLeast(1f)
+            val cx = width * .5f
+            val cy = height * .5f
+            positions.forEachIndexed { i, spot ->
+                val x = cx + (spot.x - cal.center.x) * scale
+                val y = cy + (spot.y - cal.center.y) * scale
+                canvas.drawCircle(x, y, dp(18).toFloat(), dot)
+                canvas.drawText("${i + 1}:${letters.getOrNull(i) ?: '?'}", x, y + dp(4), ink)
+            }
+        }
     }
 
     private fun dp(n: Int) = (n * resources.displayMetrics.density + .5f).toInt()
