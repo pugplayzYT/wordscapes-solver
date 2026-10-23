@@ -74,8 +74,8 @@ class MainActivity : Activity() {
         })
         val instructions = TextView(this).apply {
             text = "2 · Tap SHOW CONTROLS if hidden, then open Wordscapes:\n\n" +
-                "CAL  — One-time center + radius setup\n\n" +
-                "SCAN — Read letters; auto-run if confident, otherwise review\n\n" +
+                "CAL  — One-time rectangle around the wheel\n\n" +
+                "SCAN — Auto-find wheel size, position, 3–12 letters, then read\n\n" +
                 "RUN  — Swipe possible words until the wheel disappears\n\n" +
                 "STOP — Cancel immediately\n\n" +
                 "HIDE — Stop and remove all floating controls\n\n" +

@@ -80,7 +80,7 @@ object WordEngine {
 
     fun solve(letters: String, limit: Int = 130): List<String> {
         val cleaned = letters.uppercase(Locale.US)
-        require(cleaned.length in 3..8 && cleaned.all { it in 'A'..'Z' })
+        require(cleaned.length in 3..12 && cleaned.all { it in 'A'..'Z' })
         return (dictionary ?: emptySet()).asSequence()
             .filter { it.length <= cleaned.length && isValid(it, cleaned) }
             .sortedWith(compareByDescending<String> {
@@ -106,4 +106,4 @@ object WordEngine {
 
 data class Spot(val x: Float, val y: Float)
 
-data class WheelResult(val points: List<Spot>, val confidence: Float, val inferredCount: Int)
+data class WheelResult(\n    val points: List<Spot>, val confidence: Float, val inferredCount: Int,\n    val center: Spot? = null, val radius: Float = 0f\n)

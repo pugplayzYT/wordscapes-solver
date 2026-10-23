@@ -147,7 +147,7 @@ object WheelDetector {
                     }
                 }
                 // Discourage counts that require inventing too many invisible letters.
-                val sufficient = bestHits >= max(3,(n*.65f).ceilToInt())
+                val sufficient = bestHits >= max(3,ceil(n*.65f).toInt())
                 if (!sufficient) continue
                 val candidate = Candidate(center,radius,n,bestPhase,bestScore,signal)
                 if (candidate.score > (best?.score ?: Float.NEGATIVE_INFINITY))
