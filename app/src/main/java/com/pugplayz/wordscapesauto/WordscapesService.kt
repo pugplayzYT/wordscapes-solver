@@ -5,12 +5,16 @@ import android.accessibilityservice.GestureDescription
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Rect
+import android.graphics.RectF
 import android.graphics.Path
 import android.hardware.HardwareBuffer
 import android.os.Handler
 import android.os.Looper
 import android.view.*
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityWindowInfo
+import android.os.Build
 import android.widget.*
 import java.io.File
 import java.io.FileOutputStream
@@ -256,6 +260,11 @@ class WordscapesService : AccessibilityService() {
      * small WAKE affordance is separately touchable by the user.
      */
     fun setCurtainPreference(enabled:Boolean) {
+        if(enabled && Build.VERSION.SDK_INT<34) {
+            curtainPrefs.edit().putBoolean("auto_dark",false).apply()
+            message("No-flash DARK requires Android 14+")
+            return
+        }
         curtainPrefs.edit().putBoolean("auto_dark",enabled).apply()
         if(enabled && !autoPilot) {
             message("Start AUTO first, then tap DARK")
@@ -563,10 +572,6 @@ class WordscapesService : AccessibilityService() {
                               oneShot:Boolean) {
         val letters=wheel.letters
         val points=wheel.points
-        // The confirmed wheel and its positions must NOT be thrown away just
-        // because our bundled dictionary has incomplete coverage.
-        val dictionary=WordEngine.solve(letters)
-        val missingLongWord=dictionary.none { it.length==letters.length }
         val cal=Calibration(wheel.center,wheel.radius*1.38f)
         pendingCalibration=cal
         pendingPoints=points
@@ -582,42 +587,39 @@ class WordscapesService : AccessibilityService() {
             wheel.screenshotCrop.width(),wheel.screenshotCrop.height())
         scanPreviewOrigin=Spot(wheel.screenshotCrop.left.toFloat(),
             wheel.screenshotCrop.top.toFloat())
-        bitmap.recycle()
         gemmaFailures=0
         gemmaIdleCount=0
-        message("Gemma: $letters • ${dictionary.size} local words")
         if(oneShot) {
+            bitmap.recycle()
+            message("Gemma: $letters • inspect detected touch points")
             showReview()
             return
         }
-        if(!missingLongWord && dictionary.isNotEmpty()) {
-            startSolving(letters)
-            return
-        }
-        // An absence of a longest word is a DICTIONARY GAP, not proof that
-        // Gemma hallucinated the wheel. Ask the same local model for actual
-        // anagrams before continuing with the words we already have.
+
+        // Do not consult the offline dictionary or Datamuse at all in
+        // Gemma mode. Let the vision model inspect the crossword board
+        // and rank likely common answers, not random permutations.
+        // The bitmap must stay alive until the worker has encoded it.
         val ticket=generation
-        message("Gemma: $letters • finding missing full-length words…")
-        gemma.suggestWords(letters) { outcome ->
+        message("Gemma: $letters • finding common grid answers…")
+        gemma.suggestWords(letters,bitmap) { outcome ->
             handler.post {
+                bitmap.recycle()
                 if(ticket!=generation || !autoPilot || !gemmaMode)
                     return@post
-                aiCandidateWords=outcome.getOrNull().orEmpty()
-                    .filter { WordEngine.isValid(it,letters) }
-                    .distinct()
-                val all=(aiCandidateWords+dictionary).distinct()
-                if(all.isEmpty()) {
-                    message("No playable words for $letters — review")
-                    stopAutomation("AI paused: no playable words for $letters")
+                val suggested=outcome.getOrNull().orEmpty()
+                    .filter {WordEngine.isValid(it,letters)}
+                    .distinct().take(32)
+                if(suggested.isEmpty()) {
+                    android.util.Log.w("WordscapesAuto",
+                        "AI common-word list unavailable",
+                        outcome.exceptionOrNull())
+                    stopAutomation("AI paused: no common words for $letters")
                     if(reviewPanel==null)showReview()
                     return@post
                 }
-                if(outcome.isFailure) {
-                    android.util.Log.w("WordscapesAuto",
-                        "Gemma anagram fallback failed",outcome.exceptionOrNull())
-                }
-                message("$letters: ${aiCandidateWords.size} Gemma + ${dictionary.size} local")
+                aiCandidateWords=suggested
+                message("$letters • ${suggested.size} likely AI answers")
                 startSolving(letters)
             }
         }
@@ -845,65 +847,116 @@ class WordscapesService : AccessibilityService() {
         message(why)
     }
 
-    private fun capture(callback: (Bitmap?) -> Unit) {
-        // A fully black overlay might itself appear in takeScreenshot().
-        // Temporarily uncover the game, wait for SurfaceFlinger to present
-        // the underlying frame, capture, then restore the visual curtain.
-        // Brief screen flashes are a known limitation of this workaround.
-        val mask=curtainMask
-        val wake=curtainWake
-        val shouldUncover=curtainOn && mask?.isAttachedToWindow==true
-        if(shouldUncover) {
-            mask?.visibility=View.INVISIBLE
-            wake?.visibility=View.INVISIBLE
+    /**
+     * NO FLASH CAPTURE on Android 14+: takeScreenshotOfWindow captures the
+     * real foreground app even UNDER an accessibility overlay. Keep the
+     * curtain visible throughout; do not briefly hide it for every frame.
+     *
+     * ScreenshotOfWindow returns a bitmap of the target window, which may
+     * differ from display dimensions. Composite its pixels back into the
+     * original full-screen coordinate space before giving it to Gemma,
+     * because AI points must line up with touchscreen gesture coordinates.
+     */
+    private fun capture(callback:(Bitmap?)->Unit) {
+        val dark=curtainOn && curtainMask?.isAttachedToWindow==true
+        if(dark && Build.VERSION.SDK_INT<34) {
+            stopAutomation("DARK requires Android 14+ window capture")
+            callback(null)
+            return
         }
-        fun restore() {
-            if(shouldUncover && curtainOn) {
-                curtainMask?.visibility=View.VISIBLE
-                curtainWake?.visibility=View.VISIBLE
+        val target=if(dark) {
+            // Access active application window, NOT our overlay's window.
+            windows.filter {it.type==AccessibilityWindowInfo.TYPE_APPLICATION}
+                .filter {it.root?.packageName?.toString()!=packageName}
+                .sortedWith(compareByDescending<AccessibilityWindowInfo> {
+                    it.isActive || it.isFocused
+                }.thenByDescending {it.layer})
+                .firstOrNull()
+        } else null
+        if(dark && target==null) {
+            android.util.Log.w("WordscapesAuto",
+                "No foreground app window for dark screenshot")
+            stopAutomation("DARK paused: no capture window")
+            callback(null)
+            return
+        }
+
+        val bounds=Rect()
+        target?.getBoundsInScreen(bounds)
+        val callbackApi=object:TakeScreenshotCallback {
+            override fun onSuccess(result:ScreenshotResult) {
+                var copied:Bitmap?=null
+                try {
+                    val buffer:HardwareBuffer=result.hardwareBuffer
+                    try {
+                        val wrapped=Bitmap.wrapHardwareBuffer(buffer,result.colorSpace)
+                        try {
+                            copied=wrapped?.copy(Bitmap.Config.ARGB_8888,false)
+                        }finally {
+                            wrapped?.recycle()
+                        }
+                    }finally {
+                        buffer.close()
+                    }
+                    if(dark && copied!=null) {
+                        val screenshot=copied!!
+                        val size=android.graphics.Point()
+                        @Suppress("DEPRECATION")
+                        wm.defaultDisplay.getRealSize(size)
+                        val fullWidth=size.x.coerceAtLeast(1)
+                        val fullHeight=size.y.coerceAtLeast(1)
+                        if(bounds.width()<60||bounds.height()<60)
+                            error("Window position unavailable")
+                        // Some OEMs return the full display image from this
+                        // API; do not scale it twice in that case.
+                        if(screenshot.width!=fullWidth ||
+                           screenshot.height!=fullHeight) {
+                            val padded=Bitmap.createBitmap(
+                                fullWidth,fullHeight,Bitmap.Config.ARGB_8888)
+                            val canvas=Canvas(padded)
+                            canvas.drawColor(android.graphics.Color.BLACK)
+                            canvas.drawBitmap(screenshot,null,
+                                RectF(bounds.left.toFloat(),bounds.top.toFloat(),
+                                    bounds.right.toFloat(),bounds.bottom.toFloat()),
+                                android.graphics.Paint(3))
+                            copied=padded
+                            screenshot.recycle()
+                        }
+                    }
+                    callback(copied)
+                } catch(e:Exception) {
+                    copied?.recycle()
+                    android.util.Log.e("WordscapesAuto",
+                        "Window capture or mapping failed",e)
+                    if(dark)stopAutomation("DARK paused: ${e.message?.take(35)}")
+                    callback(null)
+                }
             }
-        }
-        val action=Runnable {
-            try {
-                takeScreenshot(android.view.Display.DEFAULT_DISPLAY,mainExecutor,
-                    object:TakeScreenshotCallback {
-                        override fun onSuccess(result:ScreenshotResult) {
-                            var copy:Bitmap?=null
-                            try {
-                                val buffer:HardwareBuffer=result.hardwareBuffer
-                                try {
-                                    val wrapped=Bitmap.wrapHardwareBuffer(
-                                        buffer,result.colorSpace)
-                                    try {
-                                        copy=wrapped?.copy(Bitmap.Config.ARGB_8888,false)
-                                    } finally {
-                                        wrapped?.recycle()
-                                    }
-                                } finally {
-                                    buffer.close()
-                                }
-                            } catch(e:Exception) {
-                                android.util.Log.w("WordscapesAuto",
-                                    "Screenshot buffer failed",e)
-                            } finally {
-                                restore()
-                            }
-                            callback(copy)
-                        }
-                        override fun onFailure(errorCode:Int) {
-                            restore()
-                            message("Screenshot error $errorCode — retry")
-                            callback(null)
-                        }
-                    })
-            }catch(e:Exception) {
-                restore()
+            override fun onFailure(errorCode:Int) {
                 android.util.Log.w("WordscapesAuto",
-                    "Screenshot operation threw",e)
+                    "Screenshot failed, code=$errorCode, dark=$dark")
+                if(dark) {
+                    // NEVER flash the game to retry: pause and reveal only
+                    // after we know window-only capture is unavailable.
+                    stopAutomation("DARK cannot capture game (code $errorCode)")
+                } else {
+                    message("Screenshot error $errorCode — retry")
+                }
                 callback(null)
             }
         }
-        handler.postDelayed(action,if(shouldUncover)160L else 0L)
+        try {
+            if(dark) {
+                takeScreenshotOfWindow(target!!.id,mainExecutor,callbackApi)
+            } else {
+                takeScreenshot(android.view.Display.DEFAULT_DISPLAY,
+                    mainExecutor,callbackApi)
+            }
+        } catch(e:Exception) {
+            android.util.Log.e("WordscapesAuto","Capture request threw",e)
+            if(dark)stopAutomation("DARK cannot capture game")
+            callback(null)
+        }
     }
 
     private fun calibrate() {
@@ -1080,37 +1133,55 @@ class WordscapesService : AccessibilityService() {
     }
 
     private fun startSolving(letters: String) {
-        val cal = pendingCalibration ?: run { message("No scanned wheel"); return }
-        actualLetters = letters
-        if (autoPilot) { autoRetries = 0; autoUiRetries = 0 }
-        activePoints = pendingPoints.toList()
-        activeCalibration = cal
-        activeWheel = pendingWheel
-        // Model suggestions are constrained to the confirmed physical tiles.
-        // Put longer missing dictionary words first, then known local words.
-        // New puzzle resets aiCandidateWords in gemmaUseWheel().
-        solveWords = (aiCandidateWords + WordEngine.solve(letters))
-            .filter { WordEngine.isValid(it,letters) }.distinct().take(170)
-        aiCandidateWords = emptyList()
-        solveIndex = 0
-        isRunning = true
+        val cal=pendingCalibration ?:run {message("No scanned wheel");return}
+        actualLetters=letters
+        if(autoPilot) {autoRetries=0;autoUiRetries=0}
+        activePoints=pendingPoints.toList()
+        activeCalibration=cal
+        activeWheel=pendingWheel
+
+        // Gemma mode is completely AI-driven for WORD CHOICE. The
+        // dictionary and Datamuse are for the optional legacy OCR mode.
+        solveWords=if(gemmaMode) {
+            aiCandidateWords.filter {WordEngine.isValid(it,letters)}
+                .distinct().take(32)
+        } else {
+            WordEngine.solve(letters)
+        }
+        aiCandidateWords=emptyList()
+        solveIndex=0
+        if(solveWords.isEmpty()) {
+            message("No words to try for $letters")
+            if(autoPilot) stopAutomation("AI paused: no proposed words")
+            return
+        }
+        isRunning=true
         generation++
-        val ticket = generation
-        message("${solveWords.size} candidates")
-        baselineImage?.recycle(); baselineImage = null
-        // Datamuse is best-effort; it never delays an offline solution.
-        Thread {
-            val extras = DatamuseClient.supplementalWords(letters)
-            handler.post {
-                if (ticket == generation && isRunning) {
-                    solveWords = (solveWords + extras).distinct().take(170)
+        val ticket=generation
+        message("${solveWords.size} ${if(gemmaMode)"AI" else "dictionary"} candidates")
+        baselineImage?.recycle()
+        baselineImage=null
+        if(!gemmaMode) {
+            // Optional network dictionary is legacy-only. It does NOT
+            // inject long lists of obscure words into Gemma's rankings.
+            Thread {
+                val extras=DatamuseClient.supplementalWords(letters)
+                handler.post {
+                    if(ticket==generation && isRunning) {
+                        solveWords=(solveWords+extras).distinct().take(170)
+                    }
                 }
-            }
-        }.start()
+            }.start()
+        }
         capture { bitmap ->
-            if (ticket != generation) { bitmap?.recycle(); return@capture }
-            baselineImage = bitmap
-            handler.postDelayed({ nextWord(ticket) }, 100)
+            if(ticket!=generation){bitmap?.recycle();return@capture}
+            if(bitmap==null){
+                stop("Cannot capture puzzle baseline")
+                if(autoPilot)stopAutomation("AUTO paused: screenshot failed")
+                return@capture
+            }
+            baselineImage=bitmap
+            handler.postDelayed({nextWord(ticket)},100)
         }
     }
 
