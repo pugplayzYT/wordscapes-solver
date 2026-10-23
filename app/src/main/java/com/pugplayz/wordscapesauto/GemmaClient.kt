@@ -264,6 +264,194 @@ class GemmaClient(private val context: Context) {
         }.start()
     }
 
+    data class RoyalMove(
+        val scene:String,
+        val action:String,
+        val point1:Spot?,
+        val point2:Spot?,
+        val confidence:Double,
+        val description:String,
+        val signature:String
+    )
+
+    /**
+     * Single-step Royal Match planner, invoked AFTER every previous gesture.
+     * Screenshot coordinates are normalized to 0..1000, then converted to
+     * native Android screen coordinates.
+     * No purchased boosters / money / lives may be spent intentionally.
+     */
+    fun planRoyalMatch(
+        bitmap:Bitmap,
+        previousMove:String,
+        previousResult:String,
+        callback:(Result<RoyalMove>)->Unit
+    ) {
+        Thread {
+            val result=runCatching {
+                val prompt="""
+                    You are playing Royal Match, an Android MATCH-3 puzzle.
+                    You see one current FULL-SCREEN screenshot. Return ONLY
+                    one JSON object specifying EXACTLY ONE next action.
+                    The phone (not you) will execute it and show you the
+                    result in the next screenshot.
+
+                    Prior executed action: $previousMove.
+                    Observed result: $previousResult.
+                    If a previous move produced no visible board change,
+                    DO NOT repeat it. Re-examine the current board carefully.
+
+                    Output JSON FORMAT (all fields mandatory):
+                    {"scene":"menu","action":"tap",
+                     "x1":500,"y1":760,"x2":500,"y2":760,
+                     "confidence":0.90,"description":"Level button",
+                     "board":{"left":0,"top":0,"right":0,"bottom":0,
+                              "rows":0,"cols":0},
+                     "from_row":-1,"from_col":-1,
+                     "to_row":-1,"to_col":-1}
+
+                    Valid scene: menu | prelevel | board | victory | failed |
+                                 ad | unknown.
+                    Valid action: tap | swipe | wait.
+                    x1,y1,x2,y2 are integers 0 to 1000, relative to the
+                    WHOLE screenshot including borders, x rightwards and
+                    y downwards. Put the center of what must be tapped.
+
+                    MENU: locate the actual bright LEVEL button and tap it.
+                    PRELEVEL: locate the PLAY button and tap it, without
+                    selecting paid booster options.
+                    VICTORY: tap a visible FREE Continue, Next, or Level
+                    button (not a paid offer, multiplier, purchase, or claim).
+                    FAILED: tap a visible ordinary FREE Retry/Try Again if
+                    available. NEVER spend coins, buy extra moves, watch an
+                    optional rewarded video, or purchase anything. When no
+                    free retry is clearly shown, action=wait.
+                    AD: click ONLY clearly visible current Close/X/Skip;
+                    never click install, open, rewarded, or purchase buttons.
+                    If no close control is visible, action=wait.
+                    UNKNOWN or dialog with costs/consent/uncertainty: wait.
+
+                    BOARD: carefully read the match-3 grid, obstacles,
+                    TARGETS top-left and remaining MOVES top-right.
+                    Choose the single BEST next move to advance targets.
+                    Swap only horizontally/vertically adjacent SWAPPABLE
+                    ordinary colored tiles to make a legal match of 3+.
+                    Prefer matches of 4+, creating Rockets, TNT, Propellers,
+                    or Light Balls. Prefer combining free IN-BOARD power-ups,
+                    using a free in-board power-up if clearly appropriate.
+                    DO NOT touch boosters outside the board, purchase
+                    buttons, coins, extra moves, or a Settings menu.
+                    For MARBLE obstacles, an in-board power-up is necessary
+                    to crack the Marble before a normal match clears Plaster.
+                    A move into a blocked cell is invalid.
+                    A swipe action must contain the centers of its two
+                    adjacent cells in x1/y1 and x2/y2.
+
+                    In BOARD, also report the OUTER rectangle of the
+                    visible match-3 tile grid as board.left/top/right/bottom
+                    in normalized 0..1000 units, and the number of rows
+                    and columns if you can confidently count them.
+                    Give 0 for rows/cols and -1 for row/col indices when
+                    unsure. When certain, from_row/from_col and to_row/to_col
+                    are ZERO-BASED integer indices into the board grid.
+                    For a TAP of an already free IN-BOARD power-up, use
+                    action=tap and x1/y1 at its center.
+
+                    Only choose a move when you can SEE its cells.
+                    Return action=wait and confidence low if uncertain.
+                    Return confidence 0..1 and a short reason.
+                    No Markdown. Only JSON.
+                """.trimIndent()
+                val json=ask(bitmap,prompt,1700)
+                val scene=json.optString("scene","unknown").trim()
+                    .lowercase(Locale.US)
+                val action=json.optString("action","wait").trim()
+                    .lowercase(Locale.US)
+                if(scene !in setOf("menu","prelevel","board","victory",
+                        "failed","ad","unknown"))
+                    error("Unknown AI scene $scene")
+                if(action !in setOf("tap","swipe","wait"))
+                    error("Unsupported AI action $action")
+                val confidence=json.optDouble("confidence",0.0)
+                    .let {if(it.isFinite())it.coerceIn(0.0,1.0) else 0.0}
+                val label=json.optString("description","").take(115)
+                val x1=json.optDouble("x1",Double.NaN)
+                val y1=json.optDouble("y1",Double.NaN)
+                val x2=json.optDouble("x2",Double.NaN)
+                val y2=json.optDouble("y2",Double.NaN)
+                fun pt(x:Double,y:Double):Spot? =
+                    if(x.isFinite() && y.isFinite() &&
+                        x in 0.0..1000.0 && y in 0.0..1000.0)
+                        Spot(pct(x,bitmap.width),pct(y,bitmap.height))
+                    else null
+                var p1=pt(x1,y1)
+                var p2=pt(x2,y2)
+
+                if(scene=="board" && action=="swipe") {
+                    val board=json.optJSONObject("board")
+                    val left=board?.optDouble("left",Double.NaN) ?:Double.NaN
+                    val top=board?.optDouble("top",Double.NaN) ?:Double.NaN
+                    val right=board?.optDouble("right",Double.NaN) ?:Double.NaN
+                    val bottom=board?.optDouble("bottom",Double.NaN) ?:Double.NaN
+                    val rows=board?.optInt("rows",0) ?:0
+                    val cols=board?.optInt("cols",0) ?:0
+                    val fr=json.optInt("from_row",-1)
+                    val fc=json.optInt("from_col",-1)
+                    val tr=json.optInt("to_row",-1)
+                    val tc=json.optInt("to_col",-1)
+                    val gridValid=rows in 3..14 && cols in 3..14 &&
+                        left.isFinite() && top.isFinite() &&
+                        right.isFinite() && bottom.isFinite() &&
+                        left>=0 && top>=0 && right<=1000 && bottom<=1000 &&
+                        right-left>=160 && bottom-top>=160 &&
+                        fr in 0 until rows && tr in 0 until rows &&
+                        fc in 0 until cols && tc in 0 until cols &&
+                        kotlin.math.abs(fr-tr)+kotlin.math.abs(fc-tc)==1
+                    if(gridValid) {
+                        // Grid-cell centers are typically more reliable
+                        // than a VLM's unconstrained pixel guesses.
+                        fun gridPoint(row:Int,col:Int)=Spot(
+                            pct(left+(col+.5)*(right-left)/cols,bitmap.width),
+                            pct(top+(row+.5)*(bottom-top)/rows,bitmap.height))
+                        p1=gridPoint(fr,fc)
+                        p2=gridPoint(tr,tc)
+                    } else {
+                        // When AI cannot count cells, use only a clearly
+                        // adjacent-looking swipe. No random long drags.
+                        val a=p1 ?:error("Missing board swap start")
+                        val b=p2 ?:error("Missing board swap end")
+                        val distance=hypot(a.x-b.x,a.y-b.y)
+                        val screenMin=min(bitmap.width,bitmap.height).toFloat()
+                        if(distance !in screenMin*.025f..screenMin*.22f)
+                            error("Board swipe not between nearby cells")
+                        val dx=kotlin.math.abs(a.x-b.x)
+                        val dy=kotlin.math.abs(a.y-b.y)
+                        if(min(dx,dy)>max(dx,dy)*.45f)
+                            error("Board swipe must be horizontal or vertical")
+                    }
+                }
+                if(action!="wait" && p1==null)error("AI did not locate action")
+                if(action=="swipe" && p2==null)error("AI missing swipe end")
+                if(scene!="board" && action=="swipe")
+                    error("Can only swipe in live board")
+                if(scene=="board" && action=="tap") {
+                    // Only tap a visibly free IN-BOARD power-up;
+                    // paid booster toolbar taps are forbidden.
+                    if(!label.contains("rocket",true) &&
+                       !label.contains("tnt",true) &&
+                       !label.contains("propeller",true) &&
+                       !label.contains("light ball",true) &&
+                       !label.contains("power-up",true))
+                        error("Board tap lacks free power-up confirmation")
+                }
+                val sig=if(action=="wait")"wait" else
+                    "$scene:$action:${p1?.x?.toInt()},${p1?.y?.toInt()}-" +
+                    "${p2?.x?.toInt()},${p2?.y?.toInt()}"
+                RoyalMove(scene,action,p1,p2,confidence,label,sig)
+            }
+            callback(result)
+        }.start()
+    }
+
     private fun pct(x:Double,max:Int):Float=(x/1000.0*max).toFloat()
 
     fun inspect(bitmap:Bitmap,callback:(Result<Scene>)->Unit) {
