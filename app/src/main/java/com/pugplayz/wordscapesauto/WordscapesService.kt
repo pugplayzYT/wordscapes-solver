@@ -429,7 +429,9 @@ class WordscapesService : AccessibilityService() {
                             pendingPoints = result.points
                             pendingCalibration = cal
                             pendingWheel = result
-                            message("Reading ${result.inferredCount} real positions…")
+                            message(if(reading.recoveredSlots>0)
+                                "Found ${result.inferredCount-reading.recoveredSlots} + ${reading.recoveredSlots} possible missing letter…"
+                                else "Reading ${result.inferredCount} letters…")
                             ocr.recognize(this, bitmap, result.points, result.radius,
                                 reading.hints) { letters ->
                                 if (ticket == generation) {
@@ -452,7 +454,7 @@ class WordscapesService : AccessibilityService() {
                                         val h=(cal.radius*2).toInt().coerceAtMost(bitmap.height-y).coerceAtLeast(1)
                                         scanPreview=Bitmap.createBitmap(bitmap,x,y,w,h)
                                         scanPreviewOrigin=Spot(x.toFloat(),y.toFloat())
-                                        message("${uncertainSlots.size} uncertain • OCR anchors: ${reading.identified}/${result.inferredCount}")
+                                        message("${uncertainSlots.size} uncertain • recovered: ${reading.recoveredSlots} • OCR: ${reading.identified}/${result.inferredCount}")
                                         if (autoPilot) autoRetry("ambiguous OCR")
                                         else showReview()
                                     }

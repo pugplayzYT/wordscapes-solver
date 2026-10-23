@@ -101,7 +101,8 @@ class SingleCharacterModel(private val context: Context) {
                 tess.setImage(view)
                 val str=tess.getUTF8Text()?.trim()?.uppercase(Locale.US) ?: ""
                 val confidence=tess.meanConfidence()
-                val letter=str.singleOrNull()
+                // Numeric zero is impossible in the letter wheel.
+                val letter=str.singleOrNull()?.let { if(it=='0') 'O' else it }
                 if(letter!=null && letter in 'A'..'Z')
                     readings.add(Answer(letter,confidence))
             }

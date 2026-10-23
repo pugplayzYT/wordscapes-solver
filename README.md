@@ -113,3 +113,9 @@ The entire calibration was changed back from two rectangular corners to **one ce
 ## Version 1.7 — readable floating controls
 
 The small single-row floating toolbar is now two rows so no buttons overlap or squash. The primary row has three equal-size 44 dp buttons: **AUTO, SCAN, STOP**. A separate secondary row has **CAL, HIDE**, and a flexible two-line status indicator. The toolbar stays within the phone screen and is limited to 560 dp wide on tablets. AUTO changes to **AUTO ON** with a green background while running. The review panel now starts below the taller toolbar. The solver and OCR algorithms are unchanged in this release.
+
+## Version 1.8 — round O and incomplete ring recovery
+
+- All OCR pathways normalize the digit **0** to the letter **O** when reading the Wordscapes wheel, where numeric tiles are not valid. This prevents an otherwise correctly located O from being silently discarded by the A–Z validator.
+- When four visible character positions form a near-complete five-letter ring, the geometry detector may test one **missing** position if the screenshot shows contrasting character ink there. It then runs individual ML Kit and Tesseract OCR on that location; an inferred coordinate is not itself treated as a recognized letter.
+- The scan status explicitly notes how many letter positions were recovered and still opens the screenshot review when confidence is insufficient. There is no claim of verified overnight reliability without actual device testing.

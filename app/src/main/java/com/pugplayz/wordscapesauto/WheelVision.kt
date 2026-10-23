@@ -52,7 +52,11 @@ class WheelVision {
                 if(task.isSuccessful) {
                     for(block in task.result.textBlocks) for(line in block.lines)
                         for(element in line.elements) {
+                            // Wordscapes tiles are letters only. ML Kit often calls a round
+                            // uppercase O the digit 0; normalize it here before
+                            // the A-Z filter silently drops that glyph.
                             val letters=element.text.trim().uppercase(Locale.US)
+                                .replace('0','O')
                             if(letters.length!=1||letters[0] !in 'A'..'Z') continue
                             val rect=element.boundingBox ?: continue
                             val glyph=Spot(region.left+rect.exactCenterX()/scale,

@@ -142,6 +142,8 @@ class LetterReader {
     private fun parseSingleLetter(value: String): Char {
         val normalized = value.trim().uppercase(Locale.US)
             .replace(" ", "").replace("\n", "")
+            // A wheel contains letters, never numeric zero.
+            .replace('0', 'O')
         return if (normalized.length == 1 && normalized[0] in 'A'..'Z')
             normalized[0] else '?'
     }
