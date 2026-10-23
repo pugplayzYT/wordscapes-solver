@@ -1,62 +1,66 @@
 package com.pugplayz.wordscapesauto
 
 import android.content.Context
-import android.graphics.RectF
-import kotlin.math.*
+import kotlin.math.min
 
-/** The only saved calibration is a rectangle containing every possible wheel letter. */
-data class Calibration(val bounds: RectF) {
-    val center: Spot get() = Spot(bounds.centerX(), bounds.centerY())
-    val radius: Float get() = min(bounds.width(), bounds.height()) * .40f
-}
+/**
+ * The saved radius is the OUTER SEARCH BOUNDARY, not the distance of letters
+ * from the center. Ring layout is estimated from fresh OCR boxes every scan.
+ */
+data class Calibration(val center: Spot, val radius: Float)
 
 object Settings {
     private const val PREF = "wordscapes.settings"
 
-    fun save(ctx: Context, cal: Calibration, imageWidth: Int, imageHeight: Int) {
-        val w = imageWidth.coerceAtLeast(1).toFloat()
-        val h = imageHeight.coerceAtLeast(1).toFloat()
+    fun save(ctx: Context, cal: Calibration, width: Int, height: Int) {
+        val w = width.coerceAtLeast(1).toFloat()
+        val h = height.coerceAtLeast(1).toFloat()
+        val minDim = min(w,h)
         ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit()
-            .putBoolean("box_calibrated", true)
-            .putFloat("box_l", cal.bounds.left / w)
-            .putFloat("box_t", cal.bounds.top / h)
-            .putFloat("box_r", cal.bounds.right / w)
-            .putFloat("box_b", cal.bounds.bottom / h)
-            .remove("n")
+            .putFloat("search_cx", cal.center.x / w)
+            .putFloat("search_cy", cal.center.y / h)
+            .putFloat("search_r", cal.radius / minDim)
+            .putBoolean("circle_calibrated", true)
+            .remove("box_calibrated")
             .apply()
     }
 
     fun hasCalibration(ctx: Context): Boolean {
         val p = ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE)
-        // Older v1.3 center + radius settings migrate automatically.
-        return p.getBoolean("box_calibrated", false) ||
-            p.contains("center_x_ratio") || p.contains("cx")
+        return p.getBoolean("circle_calibrated",false) ||
+            p.contains("box_l") || p.contains("center_x_ratio") || p.contains("cx")
     }
 
-    fun load(ctx: Context, imageWidth: Int, imageHeight: Int): Calibration? {
+    fun load(ctx: Context, width: Int, height: Int): Calibration? {
         val p = ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE)
-        val w = imageWidth.toFloat(); val h = imageHeight.toFloat()
-        if (w <= 0f || h <= 0f) return null
-        val box = if (p.getBoolean("box_calibrated", false)) {
-            RectF(p.getFloat("box_l", 0f) * w, p.getFloat("box_t", 0f) * h,
-                p.getFloat("box_r", 1f) * w, p.getFloat("box_b", 1f) * h)
-        } else if (p.contains("center_x_ratio")) {
-            val cx = p.getFloat("center_x_ratio", .5f) * w
-            val cy = p.getFloat("center_y_ratio", .7f) * h
-            val r = p.getFloat("radius_ratio", .2f) * min(w,h)
-            // Migration estimate only. User can replace it with a box using CAL.
-            RectF(cx - r * 1.35f, cy - r * 1.35f,
-                  cx + r * 1.35f, cy + r * 1.35f)
-        } else if (p.contains("cx")) {
-            val cx = p.getFloat("cx", .5f*w)
-            val cy = p.getFloat("cy", .7f*h)
-            val r = p.getFloat("radius", 150f)
-            RectF(cx-r*1.35f,cy-r*1.35f,cx+r*1.35f,cy+r*1.35f)
-        } else return null
-
-        val safe = RectF(
-            box.left.coerceIn(0f,w), box.top.coerceIn(0f,h),
-            box.right.coerceIn(0f,w), box.bottom.coerceIn(0f,h))
-        return if (safe.width() >= 90f && safe.height() >= 90f) Calibration(safe) else null
+        val w = width.toFloat(); val h = height.toFloat()
+        if (w < 90f || h < 90f) return null
+        val m = min(w,h)
+        val c = when {
+            p.getBoolean("circle_calibrated",false) -> Calibration(
+                Spot(p.getFloat("search_cx",.5f)*w, p.getFloat("search_cy",.75f)*h),
+                p.getFloat("search_r",.22f)*m
+            )
+            p.getBoolean("box_calibrated",false) -> {
+                val l=p.getFloat("box_l",0f)*w
+                val t=p.getFloat("box_t",0f)*h
+                val r=p.getFloat("box_r",1f)*w
+                val b=p.getFloat("box_b",1f)*h
+                Calibration(Spot((l+r)/2f,(t+b)/2f),min(r-l,b-t)*.5f)
+            }
+            p.contains("center_x_ratio") -> Calibration(
+                Spot(p.getFloat("center_x_ratio",.5f)*w,p.getFloat("center_y_ratio",.75f)*h),
+                p.getFloat("radius_ratio",.2f)*m*1.3f
+            )
+            p.contains("cx") -> Calibration(
+                Spot(p.getFloat("cx",w*.5f),p.getFloat("cy",h*.75f)),
+                p.getFloat("radius",150f)*1.3f
+            )
+            else -> return null
+        }
+        return c.takeIf {
+            it.radius >= 45f && it.radius <= m*.75f &&
+            it.center.x in 0f..w && it.center.y in 0f..h
+        }
     }
 }
