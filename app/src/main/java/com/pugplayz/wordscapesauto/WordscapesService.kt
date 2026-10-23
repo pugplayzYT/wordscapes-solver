@@ -32,6 +32,19 @@ class WordscapesService : AccessibilityService() {
     private val sceneReader = SceneReader()
     private val gemma by lazy { GemmaClient(this) }
     private var gemmaMode = false
+    private var royalMode = false
+    private var royalMoves = 0
+    private var royalRetries = 0
+    private var royalUnknown = 0
+    private var royalNoProgress = 0
+    private var royalLastAction = ""
+    private var royalLastDescription = ""
+    private var royalLastScene = ""
+    private var royalRecentFrame: Bitmap? = null
+    private var royalProposed: GemmaClient.RoyalMove? = null
+    private var royalStableActions = 0
+    private var royalRepeatCount = 0
+    private var royalLastExecuted = ""
     private var gemmaIdleCount = 0
     private var gemmaFailures = 0
     private var gemmaLastAction: GemmaClient.Scene? = null
@@ -91,6 +104,7 @@ class WordscapesService : AccessibilityService() {
         removeReview()
         if (::topBar.isInitialized && topBar.isAttachedToWindow) try { wm.removeView(topBar) } catch (_: Exception) {}
         baselineImage?.recycle(); baselineImage = null
+        royalRecentFrame?.recycle(); royalRecentFrame = null
         scanPreview?.recycle(); scanPreview = null
         ocr.close()
         wheelVision.close()
@@ -205,7 +219,13 @@ class WordscapesService : AccessibilityService() {
 
     private fun updateAutoControl() {
         if (!::autoControl.isInitialized) return
-        autoControl.text = if (autoPilot) (if(gemmaMode) "AI ON" else "AUTO ON") else "AUTO"
+        autoControl.text = if(autoPilot) {
+            when {
+                royalMode -> "ROYAL ON"
+                gemmaMode -> "AI ON"
+                else -> "AUTO ON"
+            }
+        }else "AUTO"
         autoControl.backgroundTintList = android.content.res.ColorStateList.valueOf(
             if (autoPilot) android.graphics.Color.rgb(23, 142, 106)
             else android.graphics.Color.rgb(40, 112, 185)
@@ -360,6 +380,13 @@ class WordscapesService : AccessibilityService() {
     private fun stopAutomation(reason: String) {
         setCurtain(false)
         autoPilot = false
+        royalMode = false
+        royalRecentFrame?.recycle()
+        royalRecentFrame = null
+        royalProposed = null
+        royalStableActions = 0
+        royalLastExecuted = ""
+        royalRepeatCount = 0
         gemmaMode = false
         gemmaIdleCount = 0
         gemmaFailures = 0
@@ -377,6 +404,11 @@ class WordscapesService : AccessibilityService() {
     }
 
     private fun startAutomation() {
+        if(getSharedPreferences("wordscapes.game",MODE_PRIVATE)
+                .getString("mode","wordscapes")=="royal") {
+            startRoyalAutomation()
+            return
+        }
         if (GemmaClient.enabled(this)) {
             removeReview()
             stop("Starting Gemma vision…")
@@ -409,6 +441,235 @@ class WordscapesService : AccessibilityService() {
         updateAutoControl()
         if(curtainPrefs.getBoolean("auto_dark",false))setCurtain(true)
         inspectScene(true)
+    }
+
+    /**
+     * Royal Match mode is completely independent of the Wordscapes
+     * letter detector, dictionary, and word-swipe queue.
+     * Gemma observes the full screen after EACH attempted match.
+     */
+    private fun startRoyalAutomation() {
+        if(!GemmaClient.enabled(this)) {
+            message("Enable Gemma in the app settings for Royal Match")
+            return
+        }
+        removeReview()
+        stop("Starting Royal Match AI…")
+        autoPilot=true
+        royalMode=true
+        gemmaMode=false
+        royalMoves=0
+        royalRetries=0
+        royalUnknown=0
+        royalNoProgress=0
+        royalLastAction="none"
+        royalLastDescription="No previous move"
+        royalLastScene=""
+        royalRecentFrame?.recycle()
+        royalRecentFrame=null
+        royalStableActions=0
+        royalProposed=null
+        royalRepeatCount=0
+        royalLastExecuted=""
+        keepAwake(true)
+        updateAutoControl()
+        if(curtainPrefs.getBoolean("auto_dark",false))setCurtain(true)
+        royalInspect()
+    }
+
+    private fun royalDifference(old:Bitmap,current:Bitmap):Float {
+        if(old.width!=current.width||old.height!=current.height)return 100f
+        var diff=0L
+        var count=0
+        // Compare board rather than only UI status. This is diagnostic
+        // feedback, not proof a particular color match succeeded.
+        val x0=old.width/10
+        val x1=old.width*9/10
+        val y0=old.height/5
+        val y1=old.height*9/10
+        for(y in y0 until y1 step 3)for(x in x0 until x1 step 3) {
+            val a=old.getPixel(x,y)
+            val b=current.getPixel(x,y)
+            diff+=kotlin.math.abs(android.graphics.Color.red(a)-android.graphics.Color.red(b))
+            diff+=kotlin.math.abs(android.graphics.Color.green(a)-android.graphics.Color.green(b))
+            diff+=kotlin.math.abs(android.graphics.Color.blue(a)-android.graphics.Color.blue(b))
+            count+=3
+        }
+        return if(count==0)0f else diff.toFloat()/count
+    }
+
+    private fun royalInspect() {
+        if(!autoPilot || !royalMode)return
+        val ticket=generation
+        message("Royal AI: observing screen…")
+        capture { current ->
+            if(ticket!=generation || !autoPilot || !royalMode) {
+                current?.recycle()
+                return@capture
+            }
+            if(current==null) {
+                royalFailure("Screenshot unavailable")
+                return@capture
+            }
+            // Retain only a small bitmap for last-frame comparison; keep
+            // the original alive until Gemma finishes encoding its image.
+            val thumbWidth=180
+            val thumbHeight=(current.height.toFloat()/current.width*
+                thumbWidth).toInt().coerceAtLeast(90)
+            val thumb=Bitmap.createScaledBitmap(current,
+                thumbWidth,thumbHeight,true)
+            val previous=royalRecentFrame
+            val score=if(previous!=null)royalDifference(previous,thumb) else 100f
+            previous?.recycle()
+            royalRecentFrame=thumb
+
+            val resultSummary=if(royalLastAction=="none") {
+                "First observation: no action taken yet."
+            } else if(score<6.5f) {
+                royalNoProgress++
+                "Only small visual change after $royalLastDescription; " +
+                "the previous move may have FAILED. Do not repeat it."
+            } else {
+                royalNoProgress=0
+                "Screen visibly changed after $royalLastDescription " +
+                "(visual difference ${score.toInt()}). Re-evaluate targets."
+            }
+            if(royalNoProgress>=5) {
+                current.recycle()
+                stopAutomation("Royal AI paused: 5 moves with no board change")
+                return@capture
+            }
+            message("Royal AI: choosing move ${royalMoves+1}…")
+            gemma.planRoyalMatch(current,royalLastDescription,resultSummary) { outcome ->
+                handler.post {
+                    current.recycle()
+                    if(ticket!=generation || !autoPilot || !royalMode)
+                        return@post
+                    val plan=outcome.getOrNull()
+                    if(plan==null) {
+                        royalFailure(outcome.exceptionOrNull()?.message
+                            ?: "Gemma returned invalid move")
+                        return@post
+                    }
+                    royalUnknown=0
+                    royalApplyPlan(plan)
+                }
+            }
+        }
+    }
+
+    private fun royalApplyPlan(plan:GemmaClient.RoyalMove) {
+        if(!autoPilot || !royalMode)return
+        val state=plan.scene
+        val action=plan.action
+        message("Royal: $state / $action • ${plan.description.take(32)}")
+        if(state=="victory") {
+            royalMoves=0
+            royalNoProgress=0
+            royalRepeatCount=0
+        }
+        if(action=="wait" || state=="unknown") {
+            royalUnknown++
+            if(royalUnknown>=18) {
+                stopAutomation("Royal AI paused: unknown screen / no free action")
+                return
+            }
+            handler.postDelayed({if(autoPilot&&royalMode)royalInspect()},3000)
+            return
+        }
+        // Ensure every recommended action has sufficiently grounded points.
+        val start=plan.point1
+        if(start==null) {
+            royalFailure("AI command missing touch coordinate")
+            return
+        }
+        if(plan.confidence < (if(state=="board").58 else .72)) {
+            royalUnknown++
+            if(royalUnknown>=7) {
+                stopAutomation("Royal AI paused: low-confidence moves")
+            }else {
+                message("Royal: uncertain ${(plan.confidence*100).toInt()}%")
+                handler.postDelayed({if(autoPilot&&royalMode)royalInspect()},1600)
+            }
+            return
+        }
+
+        // For menu navigation, independently re-check a full screenshot
+        // before tapping. For board moves, assess the next screenshot
+        // before choosing any subsequent swap.
+        if(state!="board") {
+            val prior=royalProposed
+            val compatible=prior!=null && prior.scene==state &&
+                prior.action==action && prior.point1!=null &&
+                hypot(prior.point1.x-start.x,prior.point1.y-start.y)<dp(80)
+            royalStableActions=if(compatible)royalStableActions+1 else 1
+            royalProposed=plan
+            if(royalStableActions<2) {
+                message("Royal: confirming $state button…")
+                handler.postDelayed({if(autoPilot&&royalMode)royalInspect()},850)
+                return
+            }
+        }
+        royalStableActions=0
+        royalProposed=null
+        val repeated=plan.signature==royalLastExecuted
+        royalRepeatCount=if(repeated)royalRepeatCount+1 else 1
+        if(royalRepeatCount>=4) {
+            stopAutomation("Royal AI paused: repeating ineffective action")
+            return
+        }
+        if(state=="board" && royalMoves>=140) {
+            stopAutomation("Royal AI paused: exceeded 140 board moves")
+            return
+        }
+        if(state=="failed" && royalRetries>=3) {
+            stopAutomation("Royal AI paused: too many free retries")
+            return
+        }
+        // Clicking a power-up in the board is allowed; never purchase or
+        // activate a PAID booster. The Gemma planner validates tap type.
+        message("Royal AI: ${plan.description.take(42)}")
+        val callback:(Boolean)->Unit={ ok ->
+            if(!autoPilot||!royalMode) {
+                Unit
+            }else if(!ok) {
+                stopAutomation("Royal AI gesture rejected by Android")
+            }else {
+                royalLastExecuted=plan.signature
+                royalLastAction=plan.action
+                royalLastDescription="${plan.action} ${plan.description}"
+                royalLastScene=state
+                if(state=="board")royalMoves++
+                if(state=="failed")royalRetries++
+                // Wait for animations/refills to settle before re-observing.
+                handler.postDelayed({if(autoPilot&&royalMode)royalInspect()},
+                    if(state=="board")1900L else 1750L)
+            }
+        }
+        when(action) {
+            "tap" -> tapAt(start.x,start.y,callback)
+            "swipe" -> {
+                val destination=plan.point2
+                if(destination==null) {
+                    royalFailure("AI swipe missing destination")
+                    return
+                }
+                swipe(listOf(start,destination),callback)
+            }
+            else -> royalFailure("Unsupported action")
+        }
+    }
+
+    private fun royalFailure(problem:String) {
+        if(!autoPilot||!royalMode)return
+        royalUnknown++
+        message("Royal AI retry $royalUnknown/4: ${problem.take(44)}")
+        android.util.Log.w("WordscapesAuto","Royal AI: $problem")
+        if(royalUnknown>=4) {
+            stopAutomation("Royal AI paused: ${problem.take(55)}")
+        } else handler.postDelayed({
+            if(autoPilot && royalMode)royalInspect()
+        },2000)
     }
 
     /**
