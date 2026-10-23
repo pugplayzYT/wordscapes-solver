@@ -54,7 +54,7 @@ object WordEngine {
     fun load(context: Context) {
         if (dictionary != null) return
         dictionary = context.assets.open("words.txt").bufferedReader().useLines { seq ->
-            seq.map { it.trim().uppercase(Locale.US) }.filter { it.length in 3..8 }.toHashSet()
+            seq.map { it.trim().uppercase(Locale.US) }.filter { it.length in 3..12 }.toHashSet()
         }
         frequency = context.assets.open("word_frequency.tsv").bufferedReader().useLines { lines ->
             lines.mapNotNull { line ->

@@ -51,6 +51,13 @@ jobs:
             -o app/src/main/assets/tessdata/eng.traineddata
           test $(wc -c < app/src/main/assets/tessdata/eng.traineddata) -gt 1000000
 
+      - name: Expand offline vocabulary through twelve letters
+        run: |
+          curl -fL --retry 3 --connect-timeout 15 --max-time 180 \
+            https://raw.githubusercontent.com/cmusphinx/cmudict/master/cmudict.dict \
+            -o /tmp/cmudict.dict
+          python3 scripts/expand_dictionary.py /tmp/cmudict.dict
+
       - name: Build debug APK
         run: bash ./gradlew :app:assembleDebug --no-daemon --stacktrace
 

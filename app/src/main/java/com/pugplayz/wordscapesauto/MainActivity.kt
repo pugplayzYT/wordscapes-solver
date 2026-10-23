@@ -74,14 +74,16 @@ class MainActivity : Activity() {
         })
         val instructions = TextView(this).apply {
             text = "2 · Tap SHOW CONTROLS if hidden, then open Wordscapes:\n\n" +
-                "CAL  — Tap wheel center + slider to enclose the whole wheel\n\n" +
+                "CAL  — Tap wheel center + slider to enclose the whole wheel\\n\\n" +
                 "SCAN — Find real letter shapes + OCR boxes inside the circle\n\n" +
                 "RUN  — Swipe possible words until the wheel disappears\n\n" +
-                "STOP — Cancel immediately\n\n" +
+                "AUTO — Start or stop unattended gameplay (Level → puzzle → Tap to Skip → repeat)\\n\\n" +
+                "STOP — Cancel immediately\\n\\n" +
                 "HIDE — Stop and remove all floating controls\n\n" +
                 "Reopen this app and tap SHOW FLOATING CONTROLS to restore.\n\n" +
-                "After completing a level, advance yourself and press SCAN again. " +
-                "Ads are NOT touched. Screenshots stay on the phone."
+                "AUTO keeps the screen on while active. Unknown screens and ads " +
+                "are NOT tapped. If recognition repeatedly fails, AUTO pauses. " +
+                "Screenshots stay on the phone."
             textSize = 16f
             setTextColor(Color.rgb(29, 47, 68))
             setLineSpacing(dp(4).toFloat(), 1f)

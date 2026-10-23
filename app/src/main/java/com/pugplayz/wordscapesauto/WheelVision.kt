@@ -236,7 +236,9 @@ class WheelVision {
                         }
                         val hits=chosen.size
                         if(hits<3||hits<n-1)continue
-                        if(ocrHits<2&&hits<n)continue
+                        // Whole-wheel OCR often recognizes NO isolated
+                        // characters; don't require its text boxes to find
+                        // a ring when contour geometry supplies all positions.
                         // Reject accidentally fitting every second position of a denser ring.
                         val inBand=spots.count{
                             abs(hypot(it.at.x-origin.x,it.at.y-origin.y)-radius)<
