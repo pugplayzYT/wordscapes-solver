@@ -226,7 +226,7 @@ class GemmaClient(private val context: Context) {
                     "Invalid wheel letters"
                 }
                 val seen=excluded.map {it.uppercase(Locale.US)}.toSet()
-                val avoid=seen.takeLast(130).joinToString(", ").ifBlank {"none"}
+                val avoid=seen.toList().takeLast(130).joinToString(", ").ifBlank {"none"}
                 val focus=when(round%5) {
                     0 -> "Find obvious frequent English answers for the visible slots; " +
                          "include every plausible full-length anagram."
