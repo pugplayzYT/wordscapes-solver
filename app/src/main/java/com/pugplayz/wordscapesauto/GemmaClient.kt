@@ -120,7 +120,17 @@ class GemmaClient(private val context: Context) {
                         question+"\\nIMPORTANT: Reply with exactly one valid JSON object. " +
                         "No reasoning, no explanation, no Markdown.")
                     .put("images",JSONArray().put(encoded))))
-            val conn=URL("$server/api/chat").openConnection() as HttpURLConnection
+            // Keep an exact, local copy of the same JSON string that is
+            // about to be sent to Ollama. This includes the actual JPEG
+            // image base64 bytes, model, prompt, and generation options.
+            val payload=request.toString()
+            val trace=AiDebugLog.begin(context,"$server/api/chat",payload)
+            val conn=try {
+                URL("$server/api/chat").openConnection() as HttpURLConnection
+            }catch(e:Exception){
+                AiDebugLog.failed(context,trace,"${e.javaClass.simpleName}: ${e.message}")
+                throw e
+            }
             conn.requestMethod="POST"
             conn.setRequestProperty("Content-Type","application/json")
             conn.connectTimeout=9000
@@ -129,11 +139,12 @@ class GemmaClient(private val context: Context) {
             conn.doOutput=true
             try {
                 conn.outputStream.use {
-                    it.write(request.toString().toByteArray(Charsets.UTF_8))
+                    it.write(payload.toByteArray(Charsets.UTF_8))
                 }
                 val status=conn.responseCode
                 val body=(if(status in 200..299)conn.inputStream else conn.errorStream)
                     ?.bufferedReader()?.use{it.readText()} ?: ""
+                AiDebugLog.complete(context,trace,status,body)
                 if(status !in 200..299)
                     error("Ollama HTTP $status: ${body.take(200)}")
                 if(body.isBlank()) {
@@ -182,6 +193,10 @@ class GemmaClient(private val context: Context) {
                         "(done=$doneReason, tokens=$evalCount)"
                     android.util.Log.w("WordscapesAuto",reason)
                 }
+            } catch(e:Exception) {
+                AiDebugLog.failed(context,trace,
+                    "${e.javaClass.simpleName}: ${e.message ?: "network/response error"}")
+                throw e
             } finally {
                 conn.disconnect()
             }
