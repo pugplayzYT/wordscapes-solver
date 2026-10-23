@@ -25,6 +25,12 @@ class WordscapesService : AccessibilityService() {
     private val handler = Handler(Looper.getMainLooper())
     private val ocr = LetterReader()
     private val wheelVision = WheelVision()
+    private val sceneReader = SceneReader()
+    private var autoPilot = false
+    private var autoRetries = 0
+    private var autoUiRetries = 0
+    private var lastUiAction: SceneReader.Action? = null
+    private var stableUiFrames = 0
     private lateinit var topBar: LinearLayout
     private val overlayStore get() = getSharedPreferences("wordscapes.overlay", android.content.Context.MODE_PRIVATE)
     private lateinit var status: TextView
@@ -66,6 +72,7 @@ class WordscapesService : AccessibilityService() {
         scanPreview?.recycle(); scanPreview = null
         ocr.close()
         wheelVision.close()
+        sceneReader.close()
         instance = null
         super.onDestroy()
     }
@@ -74,7 +81,8 @@ class WordscapesService : AccessibilityService() {
         WindowManager.LayoutParams(w, h,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                (if (focusable) 0 else WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE),
+                (if (focusable) 0 else WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE) or
+                (if (autoPilot) WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON else 0),
             android.graphics.PixelFormat.TRANSLUCENT).apply {
                 gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
                 this.y = y
@@ -90,13 +98,14 @@ class WordscapesService : AccessibilityService() {
             setBackgroundColor(android.graphics.Color.argb(238, 17, 40, 71))
         }
         fun button(label: String, click: () -> Unit) = Button(this).apply {
-            text = label; textSize = 11f; minWidth = 0
-            setPadding(dp(5), 0, dp(5), 0)
+            text = label; textSize = 10f; minWidth = 0
+            setPadding(dp(2), 0, dp(2), 0)
             setOnClickListener { click() }
         }
         topBar.addView(button("CAL") { calibrate() })
+        topBar.addView(button("AUTO") { if (autoPilot) stopAutomation("AUTO stopped") else startAutomation() })
         topBar.addView(button("SCAN") { scan() })
-        topBar.addView(button("STOP") { stop("Stopped by user") })
+        topBar.addView(button("STOP") { stopAutomation("Stopped by user") })
         topBar.addView(button("HIDE") { hideControls() })
         status = TextView(this).apply {
             text = "Ready"
@@ -105,13 +114,13 @@ class WordscapesService : AccessibilityService() {
             maxLines = 2
             setPadding(dp(6), 0, 0, 0)
         }
-        topBar.addView(status, LinearLayout.LayoutParams(dp(85), -2))
+        topBar.addView(status, LinearLayout.LayoutParams(dp(74), -2))
         wm.addView(topBar, overlayParams(-2, dp(54), false, dp(30)))
     }
 
     /** HIDE removes ALL floating views, cancels the solve queue, and stays hidden until SHOW in the app. */
     private fun hideControls() {
-        stop("Controls hidden")
+        stopAutomation("Controls hidden")
         removeReview()
         overlayStore.edit().putBoolean("hidden", true).apply()
         if (::topBar.isInitialized && topBar.isAttachedToWindow) {
@@ -133,6 +142,129 @@ class WordscapesService : AccessibilityService() {
 
     private fun message(text: String) {
         if (::status.isInitialized) status.text = text
+    }
+
+    private fun keepAwake(enabled: Boolean) {
+        if (!::topBar.isInitialized || !topBar.isAttachedToWindow) return
+        try {
+            val lp = topBar.layoutParams as WindowManager.LayoutParams
+            if (enabled) lp.flags = lp.flags or WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+            else lp.flags = lp.flags and WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON.inv()
+            wm.updateViewLayout(topBar, lp)
+        } catch (_: Exception) {}
+    }
+
+    private fun stopAutomation(reason: String) {
+        autoPilot = false
+        autoRetries = 0
+        autoUiRetries = 0
+        lastUiAction = null
+        stableUiFrames = 0
+        keepAwake(false)
+        stop(reason)
+    }
+
+    private fun startAutomation() {
+        if (!Settings.hasCalibration(this)) {
+            message("Set CAL circle first")
+            return
+        }
+        removeReview()
+        stop("Starting unattended mode…")
+        autoPilot = true
+        autoRetries = 0
+        autoUiRetries = 0
+        stableUiFrames = 0
+        lastUiAction = null
+        keepAwake(true)
+        inspectScene(true)
+    }
+
+    private fun autoRetry(reason: String) {
+        if (!autoPilot) return
+        if (++autoRetries >= 5) {
+            stopAutomation("AUTO paused: $reason")
+            if (pendingPoints.isNotEmpty() && reviewPanel == null) showReview()
+            return
+        }
+        message("AUTO retry $autoRetries/5: $reason")
+        handler.postDelayed({ if (autoPilot) scan() }, 1800)
+    }
+
+    /**
+     * This is a state-machine transition, not a blind tap timer. Only accept
+     * visually recognized Level or Tap to Skip text in two matching frames.
+     * Unknown screens, including advertisements, are NEVER tapped.
+     */
+    private fun inspectScene(atStart: Boolean = false) {
+        if (!autoPilot) return
+        val ticket = generation
+        capture { bitmap ->
+            if (!autoPilot || ticket != generation) {
+                bitmap?.recycle()
+                return@capture
+            }
+            if (bitmap == null) {
+                handler.postDelayed({ if (autoPilot) inspectScene(atStart) }, 3000)
+                return@capture
+            }
+            sceneReader.inspect(bitmap) { action ->
+                bitmap.recycle()
+                if (!autoPilot || ticket != generation) return@inspect
+                if (action != null && lastUiAction?.kind == action.kind &&
+                    hypot(lastUiAction!!.x-action.x,lastUiAction!!.y-action.y) < dp(65)) {
+                    stableUiFrames++
+                } else {
+                    lastUiAction = action
+                    stableUiFrames = if (action == null) 0 else 1
+                }
+                if (action != null && stableUiFrames >= 2) {
+                    lastUiAction = null
+                    stableUiFrames = 0
+                    autoUiRetries = 0
+                    message("AUTO: ${action.kind}…")
+                    tapAt(action.x,action.y) { ok ->
+                        if (!autoPilot) return@tapAt
+                        if (!ok) {
+                            stopAutomation("AUTO tap failed")
+                            return@tapAt
+                        }
+                        if (action.kind == SceneReader.Kind.TAP_TO_SKIP) {
+                            handler.postDelayed({ if (autoPilot) inspectScene(false) }, 1500)
+                        } else {
+                            autoRetries = 0
+                            handler.postDelayed({ if (autoPilot) scan() }, 1500)
+                        }
+                    }
+                } else if (action != null) {
+                    handler.postDelayed({ if (autoPilot) inspectScene(atStart) }, 750)
+                } else if (atStart) {
+                    // AUTO was started with an active puzzle instead of the menu.
+                    autoRetries = 0
+                    scan()
+                } else {
+                    autoUiRetries++
+                    message("AUTO: waiting for Level / Tap to Skip")
+                    // Watch unknown screens safely, but stop after 15 minutes to
+                    // avoid running without control after the game gets stuck.
+                    if (autoUiRetries >= 300) {
+                        stopAutomation("AUTO paused: menu not found")
+                    } else {
+                        handler.postDelayed({ if (autoPilot) inspectScene(false) }, 3000)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun tapAt(x: Float, y: Float, done:(Boolean)->Unit) {
+        val path = Path().apply { moveTo(x,y) }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path,0L,90L)).build()
+        if (!dispatchGesture(gesture,object:GestureResultCallback() {
+                override fun onCompleted(gestureDescription:GestureDescription) { done(true) }
+                override fun onCancelled(gestureDescription:GestureDescription) { done(false) }
+            },handler)) done(false)
     }
 
     private fun stop(why: String) {
@@ -161,7 +293,7 @@ class WordscapesService : AccessibilityService() {
     }
 
     private fun calibrate() {
-        stop("Capturing calibration")
+        stopAutomation("Capturing calibration")
         removeReview()
         // No ad or navigation button interaction. User must have puzzle visible.
         handler.postDelayed({
@@ -200,11 +332,12 @@ class WordscapesService : AccessibilityService() {
             if (ticket != generation) return@postDelayed
             capture { bitmap ->
                 if (ticket != generation) { bitmap?.recycle(); return@capture }
-                if (bitmap == null) return@capture
+                if (bitmap == null) { autoRetry("Screenshot unavailable"); return@capture }
                 val cal = Settings.load(this, bitmap.width, bitmap.height)
                 if (cal == null) {
                     bitmap.recycle()
                     message("Search circle invalid — tap CAL")
+                    if (autoPilot) stopAutomation("CAL invalid")
                     return@capture
                 }
                 message("Locating actual letters…")
@@ -215,6 +348,7 @@ class WordscapesService : AccessibilityService() {
                         } else if (reading == null) {
                             bitmap.recycle()
                             message("No reliable letter ring found — RESCAN / CAL")
+                            autoRetry("ring not found")
                         } else {
                             val result = reading.wheel
                             pendingPoints = result.points
@@ -231,7 +365,7 @@ class WordscapesService : AccessibilityService() {
                                         .getBoolean("auto_run", true)
                                     // Don't auto-swipe unless the positions are
                                     // strongly grounded AND OCR inputs agree.
-                                    if (autoRun && letters.allConfident && result.confidence >= .80f) {
+                                    if ((autoRun || autoPilot) && letters.allConfident && result.confidence >= .80f) {
                                         message("Verified $pending — solving…")
                                         startSolving(pending)
                                     } else {
@@ -244,7 +378,8 @@ class WordscapesService : AccessibilityService() {
                                         scanPreview=Bitmap.createBitmap(bitmap,x,y,w,h)
                                         scanPreviewOrigin=Spot(x.toFloat(),y.toFloat())
                                         message("${uncertainSlots.size} uncertain • OCR anchors: ${reading.identified}/${result.inferredCount}")
-                                        showReview()
+                                        if (autoPilot) autoRetry("ambiguous OCR")
+                                        else showReview()
                                     }
                                 }
                                 bitmap.recycle()
@@ -321,6 +456,7 @@ class WordscapesService : AccessibilityService() {
     private fun startSolving(letters: String) {
         val cal = pendingCalibration ?: run { message("No scanned wheel"); return }
         actualLetters = letters
+        if (autoPilot) { autoRetries = 0; autoUiRetries = 0 }
         activePoints = pendingPoints.toList()
         activeCalibration = cal
         activeWheel = pendingWheel
@@ -351,7 +487,11 @@ class WordscapesService : AccessibilityService() {
         if (ticket != generation || !isRunning) return
         if (solveIndex >= solveWords.size) {
             stop("Words exhausted. Review OCR or letter positions.")
-            showReview()
+            if (autoPilot) {
+                // Could already be on the completion screen. Check rather than
+                // immediately restarting from the wrong state.
+                handler.postDelayed({ if(autoPilot) inspectScene(false) },700)
+            } else showReview()
             return
         }
         val word = solveWords[solveIndex++]
@@ -399,7 +539,12 @@ class WordscapesService : AccessibilityService() {
                         if (second == null) { handler.postDelayed({ nextWord(ticket) }, 500); return@capture }
                         val gone = wheelGone(second, cal)
                         second.recycle()
-                        if (gone) stop("Level complete — advance manually")
+                        if (gone) {
+                            stop("Level complete")
+                            if (autoPilot)
+                                handler.postDelayed({ if(autoPilot) inspectScene(false) }, 1400)
+                            else message("Level complete — advance manually")
+                        }
                         else handler.postDelayed({ nextWord(ticket) }, 250)
                     }
                 }, 550)
