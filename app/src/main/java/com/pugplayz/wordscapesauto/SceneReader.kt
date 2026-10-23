@@ -18,7 +18,7 @@ class SceneReader {
 
     private val recognizer=TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
 
-    fun inspect(bitmap: Bitmap, callback: (Action?)->Unit) {
+    fun inspect(bitmap: Bitmap, expectedKind: Kind? = null, callback: (Action?)->Unit) {
         recognizer.process(InputImage.fromBitmap(bitmap,0))
             .addOnCompleteListener { task ->
                 if(!task.isSuccessful){callback(null);return@addOnCompleteListener}
@@ -63,9 +63,13 @@ class SceneReader {
                     for(element in line.elements) add(element.text,element.boundingBox)
                 }
                 // Prefer explicitly labeled buttons over generic X/Skip.
-                callback(candidates.firstOrNull {it.kind==Kind.LEVEL_BUTTON}
-                    ?: candidates.firstOrNull {it.kind==Kind.TAP_TO_SKIP}
-                    ?: candidates.firstOrNull {it.kind==Kind.AD_CLOSE})
+                callback(if(expectedKind != null) {
+                    candidates.firstOrNull {it.kind==expectedKind}
+                } else {
+                    candidates.firstOrNull {it.kind==Kind.LEVEL_BUTTON}
+                        ?: candidates.firstOrNull {it.kind==Kind.TAP_TO_SKIP}
+                        ?: candidates.firstOrNull {it.kind==Kind.AD_CLOSE}
+                })
             }
     }
     fun close()=recognizer.close()
