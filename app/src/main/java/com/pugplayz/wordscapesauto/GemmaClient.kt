@@ -204,10 +204,19 @@ class GemmaClient(private val context: Context) {
      * Model suggestions are not inherently trustworthy. WordEngine.isValid
      * only validates tile multiplicities and lengths, NOT dictionary status.
      */
+    /**
+     * AI-only Wordscapes suggestions. No dictionary word lookup.
+     *
+     * Returns a batch of newly suggested words, even if the batch is short.
+     * WordscapesService can request additional batches after the first list
+     * runs out. "Excluded" includes all previously queued/tried words, not
+     * merely the previous model response.
+     */
     fun suggestWords(
         letters:String,
         board:Bitmap,
         excluded:Set<String> = emptySet(),
+        round:Int = 0,
         callback:(Result<List<String>>)->Unit
     ) {
         Thread {
@@ -216,49 +225,63 @@ class GemmaClient(private val context: Context) {
                 require(cleaned.length in 3..12 && cleaned.all {it in 'A'..'Z'}) {
                     "Invalid wheel letters"
                 }
-                val previous=excluded.map { it.uppercase(Locale.US) }.toSet()
-                val avoid=previous.take(50).joinToString(", ").ifBlank { "none" }
+                val seen=excluded.map {it.uppercase(Locale.US)}.toSet()
+                val avoid=seen.takeLast(130).joinToString(", ").ifBlank {"none"}
+                val focus=when(round%5) {
+                    0 -> "Find obvious frequent English answers for the visible slots; " +
+                         "include every plausible full-length anagram."
+                    1 -> "Look for MORE answers NOT mentioned before. Examine " +
+                         "4-, 5-, 6-, and 7-letter anagrams and likely slot lengths."
+                    2 -> "Look for overlooked common 3- and 4-letter words " +
+                         "that fit the blank grid. Check every letter arrangement."
+                    3 -> "Look again for missing longer words, plurals, " +
+                         "past tenses, ordinary inflections, and alternate anagrams."
+                    else -> "Use the visible blank crossword lengths and " +
+                            "already-filled letters to find different valid entries."
+                }
                 val prompt="""
-                    You are a skilled human player solving the Wordscapes
-                    puzzle in this IMAGE. The letter tiles have already
-                    been reliably read and confirmed: $cleaned.
+                    You are an expert Wordscapes player.
+                    Look at the CURRENT crossword grid screenshot. The
+                    wheel tiles, confirmed twice, are: $cleaned.
+                    Return a LARGE batch of NEW real English words that
+                    can solve the remaining crossword slots.
 
-                    Inspect the crossword grid ABOVE the letter wheel:
-                    count blank cells and estimate required WORD LENGTHS.
-                    Your job is to propose only the most likely REAL,
-                    NORMAL, COMMON English answers to fill that board.
+                    {"words":["WORD1","WORD2","WORD3"]}
 
-                    Return valid JSON only: {"words":["FIRST","SECOND"]}.
+                    PRIORITY FOR THIS BATCH: $focus
 
-                    Requirements:
-                    - Rank answers in best-first PLAY ORDER, not alphabetically.
-                    - Choose obvious, frequent English words matching the
-                      visible crossword slot lengths FIRST.
-                    - Consider obvious full-length anagrams when plausible.
-                    - Include common shorter slot words, especially 4+ letters.
-                    - 3-letter words only if common and plausibly needed.
-                    - NEVER produce 1- or 2-letter words.
-                    - Each word uses only the available tiles $cleaned, each
-                      occurrence at most once per word (duplicates matter).
-                    - Exclude rare forms, archaic words, proper names,
-                      abbreviations, nonsense, and made-up words.
-                    - Do not brute-force all permutations or bonus words.
-                    - At most 32 DISTINCT suggestions. Fewer is fine.
-                    - Already attempted words; do NOT suggest: $avoid.
-                    - Answer ONLY in JSON, with a 'words' array of strings.
+                    WORD RULES:
+                    - Use only wheel tiles $cleaned; each tile at most once
+                      within a word. Duplicates in the wheel are allowed.
+                    - Every answer is at least 3 letters long.
+                    - Prefer frequent, familiar words that actually fit
+                      the visible crossword, including 5+ letter answers.
+                    - Continue past the three most obvious anagrams:
+                      systematically consider alternate combinations.
+                    - Return 20-50 DISTINCT plausible words if that many
+                      actually exist. Fewer only if genuinely necessary.
+                    - Do not invent words merely to fill the list.
+                    - Rank likely REQUIRED grid entries before bonus words.
+                    - Previously generated or attempted (DO NOT REPEAT):
+                      $avoid.
+                    - These are suggestions; the app will try them and
+                      request more if the puzzle remains incomplete.
+                    - Output ONLY JSON with a "words" string array,
+                      no explanation, no Markdown.
                 """.trimIndent()
-                val json=ask(board,prompt,1400)
-                val array=json.optJSONArray("words") ?:error("Gemma JSON has no words array")
+                val json=ask(board,prompt,1500)
+                val array=json.optJSONArray("words")
+                    ?:error("Gemma JSON has no words array")
                 val output=LinkedHashSet<String>()
                 for(i in 0 until array.length()) {
-                    val candidate=array.optString(i,"").trim().uppercase(Locale.US)
-                    if(candidate !in previous &&
-                        WordEngine.isValid(candidate,cleaned))
+                    val candidate=array.optString(i,"").trim()
+                        .uppercase(Locale.US)
+                    if(candidate !in seen &&
+                       WordEngine.isValid(candidate,cleaned))
                         output.add(candidate)
-                    if(output.size >= 32)break
+                    if(output.size>=72)break
                 }
-                if(output.isEmpty())error("Gemma gave no usable 3+ letter words")
-                output.toList() // Preserve Gemma's common-first ordering.
+                output.toList() // Model priority order, including short batches.
             }
             callback(result)
         }.start()

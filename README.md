@@ -1,3 +1,41 @@
+## v2.7 — Wordscapes continuous Gemini/Gemma answer generation
+
+Bug fixed: previous AI-only mode accepted just the first model list
+(up to 32, often only 2–3 words) and treated it as exhaustive. It would
+discard the confirmed wheel / restart the scan rather than ask for more
+words when the board was still unsolved.
+
+v2.7 now uses **multi-batch, adaptive AI-only Wordscapes solving**:
+- Gemma initially suggests common English words grounded in the
+  crossword screenshot. An initial return of 0, 2, or 3 words is
+  NOT a reason to stop or restart the level.
+- The player tries valid suggestions (at least 3 letters, uses only
+  wheel letters, including duplicate multiplicity). Kotlin's
+  WordEngine is used **only for letter validation and swipe routing**;
+  no bundled dictionary or Datamuse enumeration runs in AI mode.
+- After the pending list runs out, it captures the current crossword
+  and asks Gemma for another batch. It excludes all previously
+  suggested words and cycles strategies: longer anagrams, short
+  common words, inflections, and partially filled crossword slots.
+- Each generated batch may return up to 72 words; there is NO fixed
+  limit of 32 words or total attempts per puzzle. Every word from a
+  valid batch is appended in Gemma's priority order.
+- To avoid an uncontrolled infinite loop of expensive local LLM
+  requests, **six consecutive attempts with no novel valid words**
+  pause for manual review. Successful batches reset this safeguard.
+- Android will still verify that the puzzle wheel disappears after
+  a swipe and transition to level/victory flow.
+- Royal Match mode and the no-flash DARK curtain remain available
+  and are otherwise unchanged.
+
+Limitations: model suggestions are not guaranteed to be accepted by
+Wordscapes; the AI may still fail to solve a particular puzzle. Each
+extra batch requires another inference on the user's PC, so a slow
+CPU-offloaded Gemma model can add delay. This addresses hard list
+truncation, NOT errors in the model's letter/board recognition.
+
+---
+
 # v2.6 — Royal Match AI mode (new)
 
 This version adds a game selector under **SELECT GAME** in the Android

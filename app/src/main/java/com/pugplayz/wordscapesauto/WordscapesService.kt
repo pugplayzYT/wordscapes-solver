@@ -83,6 +83,13 @@ class WordscapesService : AccessibilityService() {
     private var uncertainSlots: List<Int> = emptyList()
     private var solveWords: List<String> = emptyList()
     private var aiCandidateWords: List<String> = emptyList()
+    // One puzzle can require many separate AI suggestion batches.
+    // There is NO total word cap in Gemma mode. Pause only after several
+    // consecutive attempts fail to produce any new usable candidates.
+    private val aiSeenWords = LinkedHashSet<String>()
+    private var aiSuggestionRound = 0
+    private var aiEmptyRounds = 0
+    private var aiRefillInFlight = false
     private var solveIndex = 0
     private var actualLetters = ""
     private var activePoints: List<Spot> = emptyList()
@@ -382,6 +389,7 @@ class WordscapesService : AccessibilityService() {
         setCurtain(false)
         autoPilot = false
         royalMode = false
+        aiRefillInFlight = false
         royalRecentFrame?.recycle()
         royalRecentFrame = null
         royalAwaitingOutcome=false
@@ -849,6 +857,10 @@ class WordscapesService : AccessibilityService() {
         glyphSamples=emptyList()
         uncertainSlots=emptyList()
         aiCandidateWords=emptyList()
+        aiSeenWords.clear()
+        aiSuggestionRound=0
+        aiEmptyRounds=0
+        aiRefillInFlight=false
         scanPreview?.recycle()
         scanPreview=Bitmap.createBitmap(bitmap,
             wheel.screenshotCrop.left,wheel.screenshotCrop.top,
@@ -864,30 +876,27 @@ class WordscapesService : AccessibilityService() {
             return
         }
 
-        // Do not consult the offline dictionary or Datamuse at all in
-        // Gemma mode. Let the vision model inspect the crossword board
-        // and rank likely common answers, not random permutations.
-        // The bitmap must stay alive until the worker has encoded it.
+        // The very first Gemma response is NOT the whole solution.
+        // We collect subsequent batches on demand if the puzzle remains.
+        // Crucially, even 0-3 answers here are not a reason to abandon it.
         val ticket=generation
-        message("Gemma: $letters • finding common grid answers…")
-        gemma.suggestWords(letters,bitmap) { outcome ->
+        message("Gemma: $letters • first common-word batch…")
+        gemma.suggestWords(letters,bitmap,round=0) { outcome ->
             handler.post {
                 bitmap.recycle()
                 if(ticket!=generation || !autoPilot || !gemmaMode)
                     return@post
-                val suggested=outcome.getOrNull().orEmpty()
-                    .filter {WordEngine.isValid(it,letters)}
-                    .distinct().take(32)
-                if(suggested.isEmpty()) {
+                val suggestions=outcome.getOrNull().orEmpty()
+                    .filter{WordEngine.isValid(it,letters)}
+                    .distinct()
+                if(outcome.isFailure)
                     android.util.Log.w("WordscapesAuto",
-                        "AI common-word list unavailable",
+                        "AI initial word generation failed; trying another batch",
                         outcome.exceptionOrNull())
-                    stopAutomation("AI paused: no common words for $letters")
-                    if(reviewPanel==null)showReview()
-                    return@post
-                }
-                aiCandidateWords=suggested
-                message("$letters • ${suggested.size} likely AI answers")
+                aiCandidateWords=suggestions
+                aiSuggestionRound=1
+                message("$letters • ${suggestions.size} AI suggestions" +
+                    if(suggestions.size<8)" (will request more)" else "")
                 startSolving(letters)
             }
         }
@@ -1418,42 +1427,39 @@ class WordscapesService : AccessibilityService() {
         activeCalibration=cal
         activeWheel=pendingWheel
 
-        // Gemma mode is completely AI-driven for WORD CHOICE. The
-        // dictionary and Datamuse are for the optional legacy OCR mode.
+        // Gemma produces the word list; Kotlin only verifies tile usage.
+        // No WordEngine.solve() or Datamuse in AI mode.
         solveWords=if(gemmaMode) {
-            aiCandidateWords.filter {WordEngine.isValid(it,letters)}
-                .distinct().take(32)
-        } else {
-            WordEngine.solve(letters)
-        }
+            aiCandidateWords.filter{WordEngine.isValid(it,letters)}.distinct()
+        } else WordEngine.solve(letters)
         aiCandidateWords=emptyList()
+        aiSeenWords.clear()
+        aiSeenWords.addAll(solveWords)
+        aiRefillInFlight=false
+        aiEmptyRounds=0
         solveIndex=0
-        if(solveWords.isEmpty()) {
-            message("No words to try for $letters")
-            if(autoPilot) stopAutomation("AI paused: no proposed words")
+        if(solveWords.isEmpty() && !gemmaMode) {
+            message("No dictionary words for $letters")
             return
         }
         isRunning=true
         generation++
         val ticket=generation
-        message("${solveWords.size} ${if(gemmaMode)"AI" else "dictionary"} candidates")
+        message("${solveWords.size} ${if(gemmaMode)"AI" else "dictionary"} initial words")
         baselineImage?.recycle()
         baselineImage=null
         if(!gemmaMode) {
-            // Optional network dictionary is legacy-only. It does NOT
-            // inject long lists of obscure words into Gemma's rankings.
             Thread {
                 val extras=DatamuseClient.supplementalWords(letters)
                 handler.post {
-                    if(ticket==generation && isRunning) {
+                    if(ticket==generation && isRunning)
                         solveWords=(solveWords+extras).distinct().take(170)
-                    }
                 }
             }.start()
         }
         capture { bitmap ->
             if(ticket!=generation){bitmap?.recycle();return@capture}
-            if(bitmap==null){
+            if(bitmap==null) {
                 stop("Cannot capture puzzle baseline")
                 if(autoPilot)stopAutomation("AUTO paused: screenshot failed")
                 return@capture
@@ -1463,15 +1469,83 @@ class WordscapesService : AccessibilityService() {
         }
     }
 
+    /**
+     * Ask Gemma for another batch *on the CURRENT board* once all current
+     * suggestions have been tried. It can generate as many cumulative words
+     * as required across rounds, with no 32-word cutoff.
+     *
+     * Six CONSECUTIVE zero-new-answer batches indicate a stuck model or a
+     * misread wheel. We pause for review instead of endlessly repeating.
+     */
+    private fun refillAiWords(ticket:Int) {
+        if(ticket!=generation || !isRunning || !autoPilot || !gemmaMode)return
+        if(aiRefillInFlight)return
+        aiRefillInFlight=true
+        message("Gemma: more words for $actualLetters (batch ${aiSuggestionRound+1})…")
+        capture { image ->
+            if(ticket!=generation || !isRunning || !autoPilot || !gemmaMode) {
+                image?.recycle()
+                return@capture
+            }
+            if(image==null) {
+                aiRefillInFlight=false
+                stopAutomation("AI paused: cannot capture next-word screenshot")
+                return@capture
+            }
+            val cal=activeCalibration
+            if(cal!=null && wheelGone(image,cal)) {
+                image.recycle()
+                aiRefillInFlight=false
+                stop("Level complete")
+                handler.postDelayed({if(autoPilot)gemmaInspect()},1200)
+                return@capture
+            }
+            val round=aiSuggestionRound++
+            val exclusions=aiSeenWords.toSet()
+            gemma.suggestWords(actualLetters,image,exclusions,round) { outcome ->
+                handler.post {
+                    image.recycle()
+                    if(ticket!=generation || !isRunning ||
+                       !autoPilot || !gemmaMode) return@post
+                    aiRefillInFlight=false
+                    val newWords=outcome.getOrNull().orEmpty()
+                        .filter{WordEngine.isValid(it,actualLetters)}
+                        .filter{it !in aiSeenWords}.distinct()
+                    if(newWords.isEmpty()) {
+                        aiEmptyRounds++
+                        android.util.Log.w("WordscapesAuto",
+                            "No new AI words (round=$round, consecutive=$aiEmptyRounds)",
+                            outcome.exceptionOrNull())
+                        if(aiEmptyRounds>=6) {
+                            stopAutomation("AI found no NEW words in 6 batches; review $actualLetters")
+                            if(reviewPanel==null)showReview()
+                        } else {
+                            message("No new words this batch; trying another strategy…")
+                            handler.postDelayed({nextWord(ticket)},900)
+                        }
+                        return@post
+                    }
+                    aiEmptyRounds=0
+                    aiSeenWords.addAll(newWords)
+                    solveWords=solveWords+newWords
+                    message("+${newWords.size} new AI words • ${solveWords.size} total")
+                    handler.postDelayed({nextWord(ticket)},160)
+                }
+            }
+        }
+    }
+
     private fun nextWord(ticket: Int) {
         if (ticket != generation || !isRunning) return
         if (solveIndex >= solveWords.size) {
+            if(gemmaMode && autoPilot) {
+                refillAiWords(ticket)
+                return
+            }
             stop("Words exhausted. Review OCR or letter positions.")
-            if (autoPilot) {
-                // Could already be on the completion screen. Check rather than
-                // immediately restarting from the wrong state.
-                handler.postDelayed({ if(autoPilot) if(gemmaMode) gemmaInspect() else inspectScene(false) },700)
-            } else showReview()
+            if (autoPilot)
+                handler.postDelayed({if(autoPilot)inspectScene(false)},700)
+            else showReview()
             return
         }
         val word = solveWords[solveIndex++]
