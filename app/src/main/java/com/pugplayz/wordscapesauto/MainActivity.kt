@@ -22,13 +22,13 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.rgb(246, 249, 253))
         }
         root.addView(TextView(this).apply {
-            text = "WORDSCAPES AUTO"
+            text = "AI GAME AUTO"
             textSize = 28f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.rgb(16, 53, 92))
         })
         root.addView(TextView(this).apply {
-            text = "Accessibility-powered puzzle solver"
+            text = "Local Gemma-powered puzzle and match-3 agent"
             textSize = 15f
             setTextColor(Color.rgb(91, 105, 123))
         })
@@ -55,6 +55,40 @@ class MainActivity : Activity() {
             }
         }
         root.addView(showControlsButton, LinearLayout.LayoutParams(-1, dp(62)))
+        val gamePrefs=getSharedPreferences("wordscapes.game",MODE_PRIVATE)
+        root.addView(TextView(this).apply {
+            text="SELECT GAME"
+            textSize=20f
+            typeface=Typeface.DEFAULT_BOLD
+            setTextColor(Color.rgb(16,53,92))
+            setPadding(0,dp(17),0,dp(8))
+        })
+        val games=arrayOf(
+            "Wordscapes — word wheel",
+            "Royal Match — AI match-3"
+        )
+        val picker=Spinner(this)
+        picker.adapter=ArrayAdapter(
+            this,android.R.layout.simple_spinner_dropdown_item,games)
+        picker.setSelection(if(gamePrefs.getString("mode","wordscapes")=="royal")1 else 0)
+        picker.onItemSelectedListener=object:android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent:android.widget.AdapterView<*>?,
+                                        view:android.view.View?,position:Int,id:Long) {
+                gamePrefs.edit().putString(
+                    "mode",if(position==1)"royal" else "wordscapes").apply()
+            }
+            override fun onNothingSelected(parent:android.widget.AdapterView<*>?) {}
+        }
+        root.addView(picker,LinearLayout.LayoutParams(-1,dp(57)))
+        root.addView(TextView(this).apply {
+            text="Royal Match: open the game's Level screen and press AUTO. " +
+                "Gemma decides one swipe/tap at a time, then examines the result. " +
+                "It avoids coins, in-app purchases and paid boosters. " +
+                "Wordscapes keeps the existing wheel solver."
+            textSize=13f
+            setTextColor(Color.rgb(79,93,115))
+            setPadding(0,dp(4),0,dp(12))
+        })
         // Ollama/Gemma is preferred, but disabling it restores the original
         // on-device scanner without removing the old CAL controls.
         val aiPrefs=getSharedPreferences(GemmaClient.PREF,MODE_PRIVATE)
@@ -66,7 +100,7 @@ class MainActivity : Activity() {
             setPadding(0,dp(16),0,dp(9))
         })
         root.addView(CheckBox(this).apply {
-            text="Use Gemma instead of old wheel detector"
+            text="Use Gemma AI (required for Royal Match)"
             textSize=16f
             isChecked=GemmaClient.enabled(this@MainActivity)
             setOnCheckedChangeListener { _, enabled ->
@@ -163,10 +197,12 @@ class MainActivity : Activity() {
             setPadding(0, 0, 0, dp(12))
         })
         val instructions = TextView(this).apply {
-            text = "CONTROLS IN WORDSCAPES:\n\n" +
+            text = "FLOATING GAME CONTROLS:\n\n" +
                 "AUTO — Gemma reads menu, wheel, victory and ad close/skip " +
                 "buttons, then ranks common grid answers; the phone swipes.\n\n" +
-                "SCAN — One Gemma scan of an open puzzle and review.\n\n" +
+                "ROYAL MATCH — AUTO clicks Level/Play, observes the grid, " +
+                "chooses one match-3 swipe, checks what changed, and repeats.\\n\\n" +
+                "SCAN — One Wordscapes wheel scan and review.\\n\\n" +
                 "DARK — Cover the display in black while AUTO keeps running.\n\n" +
                 "CAL — Optional wheel crop area; mainly for classic OCR.\n\n" +
                 "STOP — Immediately cancel the current run.\n\n" +
@@ -180,7 +216,7 @@ class MainActivity : Activity() {
         }
         root.addView(instructions, LinearLayout.LayoutParams(-1, -2))
         root.addView(TextView(this).apply {
-            text = "Android 11+ • Gemma via Ollama on your PC • Offline dictionary"
+            text = "Android 11+ • Local Gemma via Ollama • 2 game modes"
             textSize = 12f
             setTextColor(Color.GRAY)
             gravity = Gravity.CENTER
