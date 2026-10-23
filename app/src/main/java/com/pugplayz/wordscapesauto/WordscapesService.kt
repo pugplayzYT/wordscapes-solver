@@ -358,10 +358,11 @@ class WordscapesService : AccessibilityService() {
                                 // of trusting Gemma's approximate x/y.
                                 sceneReader.inspect(screenshot,targetKind) { anchor ->
                                     handler.post {
+                                        val frameWidth=screenshot.width
+                                        val frameHeight=screenshot.height
                                         screenshot.recycle()
                                         if(ticket==generation && autoPilot && gemmaMode) {
-                                            gemmaNavigate(scene,anchor,
-                                                screenshot.width,screenshot.height)
+                                            gemmaNavigate(scene,anchor,frameWidth,frameHeight)
                                         }
                                     }
                                 }

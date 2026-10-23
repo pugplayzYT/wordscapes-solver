@@ -1,3 +1,18 @@
+## v2.1 — Level button tapping fix (October 2026)
+
+If Gemma correctly says `menu / level` but the bot never clicks Level, the failure was the **tapping verification**, not AI image classification. Older v2.0 discarded navigations when Gemma omitted x/y, reported a low self-confidence score (below 0.79), or its estimated location shifted between reads. The floating toolbar only showed `Gemma menu / level`.
+
+- AI still classifies the entire scene.
+- Android runs independent on-device ML Kit OCR on that SAME screenshot to locate the visible text **Level 123** or **Level** and uses the center of its REAL bounding box as the touch target. The on-device OCR label serves as independent verification, so one AI + OCR frame is enough for Level/Continue.
+- Without OCR, a reported Gemma tap point is accepted after two spatially similar results, with its confidence threshold reduced to 0.52 for normal game navigation. The returned point is strictly bounded to the screen.
+- **Ads:** still require a visible and OCR-detected close/skip/X control and two matching frames. It never taps a guessed corner or an ad engagement button.
+- The toolbar now shows the decision (`AI tapping level: x,y` or why it is waiting) rather than hiding the reason. Android Logcat tag `WordscapesAuto` records taps.
+- Three repeat taps of the same Level button without an observed screen transition pause AUTO instead of looping forever.
+
+A successful CI compile does not verify that the Level button is actually tappable on all Wordscapes screens. Test the new build on your device and observe whether a real Level click happens.
+
+---
+
 # Wordscapes Auto — native Android accessibility app
 
 **Android Studio / Kotlin, Android 11+.** The classic offline OCR mode needs no PC. The new Gemma mode connects to an Ollama service on your PC by USB ADB reverse or private Wi-Fi.
