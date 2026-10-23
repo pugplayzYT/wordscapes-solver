@@ -35,6 +35,8 @@ class WordscapesService : AccessibilityService() {
     private var pendingPoints: List<Spot> = emptyList()
     private var pendingCalibration: Calibration? = null
     private var pendingWheel: WheelResult? = null
+    private var scanPreview: Bitmap? = null
+    private var scanPreviewOrigin: Spot? = null
     private var correctedCount: Int? = null
     private var glyphSamples: List<GlyphMemory.Sample?> = emptyList()
     private var uncertainSlots: List<Int> = emptyList()
@@ -61,6 +63,7 @@ class WordscapesService : AccessibilityService() {
         removeReview()
         if (::topBar.isInitialized && topBar.isAttachedToWindow) try { wm.removeView(topBar) } catch (_: Exception) {}
         baselineImage?.recycle(); baselineImage = null
+        scanPreview?.recycle(); scanPreview = null
         ocr.close()
         wheelVision.close()
         instance = null
@@ -190,6 +193,8 @@ class WordscapesService : AccessibilityService() {
         pendingCalibration = null
         pendingWheel = null
         removeReview()
+        scanPreview?.recycle(); scanPreview = null
+        scanPreviewOrigin = null
         if (!Settings.hasCalibration(this)) { message("Set center + search radius with CAL once"); return }
         handler.postDelayed({
             if (ticket != generation) return@postDelayed
@@ -218,7 +223,6 @@ class WordscapesService : AccessibilityService() {
                             message("Reading ${result.inferredCount} real positions…")
                             ocr.recognize(this, bitmap, result.points, result.radius,
                                 reading.hints) { letters ->
-                                bitmap.recycle()
                                 if (ticket == generation) {
                                     pending = letters.text
                                     glyphSamples = letters.samples
@@ -227,14 +231,23 @@ class WordscapesService : AccessibilityService() {
                                         .getBoolean("auto_run", true)
                                     // Don't auto-swipe unless the positions are
                                     // strongly grounded AND OCR inputs agree.
-                                    if (autoRun && letters.allConfident && result.confidence >= .86f) {
+                                    if (autoRun && letters.allConfident && result.confidence >= .80f) {
                                         message("Verified $pending — solving…")
                                         startSolving(pending)
                                     } else {
+                                        // Real screenshot with actual detected touch markers:
+                                        // user can spot misplaced points without guessing.
+                                        val x=(cal.center.x-cal.radius).toInt().coerceIn(0,bitmap.width-1)
+                                        val y=(cal.center.y-cal.radius).toInt().coerceIn(0,bitmap.height-1)
+                                        val w=(cal.radius*2).toInt().coerceAtMost(bitmap.width-x).coerceAtLeast(1)
+                                        val h=(cal.radius*2).toInt().coerceAtMost(bitmap.height-y).coerceAtLeast(1)
+                                        scanPreview=Bitmap.createBitmap(bitmap,x,y,w,h)
+                                        scanPreviewOrigin=Spot(x.toFloat(),y.toFloat())
                                         message("${uncertainSlots.size} uncertain • OCR anchors: ${reading.identified}/${result.inferredCount}")
                                         showReview()
                                     }
                                 }
+                                bitmap.recycle()
                             }
                         }
                     }
@@ -266,7 +279,7 @@ class WordscapesService : AccessibilityService() {
         panel.addView(lettersField, LinearLayout.LayoutParams(-1, dp(54)))
         // Review the newly detected positions without visiting calibration.
         panel.addView(RingKeyView(pendingPoints, pendingWheel, pending),
-            LinearLayout.LayoutParams(-1, dp(126)))
+            LinearLayout.LayoutParams(-1, dp(230)))
         panel.addView(TextView(this).apply {
             text = "Wrong NUMBER of letters? Use −/+ (rescans this level). Wrong LETTER? Edit above."
             textSize = 12f
@@ -453,16 +466,30 @@ class WordscapesService : AccessibilityService() {
         }
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
-            val geometry = wheel ?: return
-            val center = geometry.center ?: return
-            val scale = (height * .37f) / geometry.radius.coerceAtLeast(1f)
-            val cx = width * .5f
-            val cy = height * .5f
-            positions.forEachIndexed { i, spot ->
-                val x = cx + (spot.x - center.x) * scale
-                val y = cy + (spot.y - center.y) * scale
-                canvas.drawCircle(x, y, dp(18).toFloat(), dot)
-                canvas.drawText("${i + 1}:${letters.getOrNull(i) ?: '?'}", x, y + dp(4), ink)
+            val image=scanPreview
+            val origin=scanPreviewOrigin
+            if(image!=null&&origin!=null&&!image.isRecycled) {
+                val scale=min(width.toFloat()/image.width,height.toFloat()/image.height)
+                val left=(width-image.width*scale)/2f
+                val top=(height-image.height*scale)/2f
+                canvas.drawBitmap(image,null,android.graphics.RectF(left,top,
+                    left+image.width*scale,top+image.height*scale),android.graphics.Paint(3))
+                positions.forEachIndexed { i, spot ->
+                    val x=left+(spot.x-origin.x)*scale
+                    val y=top+(spot.y-origin.y)*scale
+                    canvas.drawCircle(x,y,dp(17).toFloat(),dot)
+                    canvas.drawText("${i+1}:${letters.getOrNull(i) ?: '?'}",x,y+dp(4),ink)
+                }
+            } else {
+                val geometry=wheel ?:return
+                val center=geometry.center ?:return
+                val scale=height*.35f/geometry.radius.coerceAtLeast(1f)
+                positions.forEachIndexed { i,spot ->
+                    val x=width*.5f+(spot.x-center.x)*scale
+                    val y=height*.5f+(spot.y-center.y)*scale
+                    canvas.drawCircle(x,y,dp(17).toFloat(),dot)
+                    canvas.drawText("${i+1}:${letters.getOrNull(i) ?: '?'}",x,y+dp(4),ink)
+                }
             }
         }
     }
