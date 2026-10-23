@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.provider.Settings as AndroidSettings
 import android.view.Gravity
 import android.widget.*
+import android.text.InputType
 
 class MainActivity : Activity() {
     private lateinit var state: TextView
@@ -54,6 +55,75 @@ class MainActivity : Activity() {
             }
         }
         root.addView(showControlsButton, LinearLayout.LayoutParams(-1, dp(62)))
+        // Ollama/Gemma is preferred, but disabling it restores the original
+        // on-device scanner without removing the old CAL controls.
+        val aiPrefs=getSharedPreferences(GemmaClient.PREF,MODE_PRIVATE)
+        root.addView(TextView(this).apply {
+            text="GEMMA 4 — LOCAL VISION CONTROLLER"
+            textSize=20f
+            typeface=Typeface.DEFAULT_BOLD
+            setTextColor(Color.rgb(16,53,92))
+            setPadding(0,dp(16),0,dp(9))
+        })
+        root.addView(CheckBox(this).apply {
+            text="Use Gemma instead of old wheel detector"
+            textSize=16f
+            isChecked=GemmaClient.enabled(this@MainActivity)
+            setOnCheckedChangeListener { _, enabled ->
+                aiPrefs.edit().putBoolean("enabled",enabled).apply()
+            }
+        })
+        root.addView(TextView(this).apply {
+            text="Ollama server URL (use ADB reverse for USB)"
+            textSize=14f
+            setTextColor(Color.DKGRAY)
+        })
+        val hostInput=EditText(this).apply {
+            setSingleLine(true)
+            textSize=16f
+            inputType=InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            setText(aiPrefs.getString("url",GemmaClient.DEFAULT_URL))
+        }
+        root.addView(hostInput,LinearLayout.LayoutParams(-1,dp(50)))
+        root.addView(TextView(this).apply {
+            text="Installed Ollama model"
+            textSize=14f
+            setTextColor(Color.DKGRAY)
+        })
+        val modelInput=EditText(this).apply {
+            setSingleLine(true)
+            textSize=16f
+            setText(aiPrefs.getString("model",GemmaClient.DEFAULT_MODEL))
+        }
+        root.addView(modelInput,LinearLayout.LayoutParams(-1,dp(50)))
+        val connectionStatus=TextView(this).apply {
+            text="The phone sends screenshots to YOUR Ollama server."
+            textSize=13f
+            setTextColor(Color.rgb(79,93,115))
+        }
+        root.addView(Button(this).apply {
+            text="SAVE SETTINGS + TEST OLLAMA"
+            setOnClickListener {
+                aiPrefs.edit()
+                    .putString("url",hostInput.text.toString().trim())
+                    .putString("model",modelInput.text.toString().trim())
+                    .apply()
+                connectionStatus.text="Testing connection…"
+                GemmaClient(this@MainActivity).test { result ->
+                    runOnUiThread { connectionStatus.text=result }
+                }
+            }
+        },LinearLayout.LayoutParams(-1,dp(58)))
+        root.addView(connectionStatus)
+        root.addView(TextView(this).apply {
+            text="USB: on the PC run adb reverse tcp:11434 tcp:11434, " +
+                "then use http://127.0.0.1:11434 here. Keep Ollama and " +
+                "the USB connection running. Use only a trusted local " +
+                "server: screenshot content is sent to that address."
+            textSize=13f
+            setTextColor(Color.rgb(79,93,115))
+            setPadding(0,dp(8),0,dp(16))
+        })
         root.addView(CheckBox(this).apply {
             text = "Auto-run after confident SCAN"
             textSize = 16f
@@ -73,24 +143,23 @@ class MainActivity : Activity() {
             setPadding(0, 0, 0, dp(12))
         })
         val instructions = TextView(this).apply {
-            text = "2 · Tap SHOW CONTROLS if hidden, then open Wordscapes:\n\n" +
-                "CAL  — Tap wheel center + slider to enclose the whole wheel\\n\\n" +
-                "SCAN — Find real letter shapes + OCR boxes inside the circle\n\n" +
-                "RUN  — Swipe possible words until the wheel disappears\n\n" +
-                "AUTO — Start or stop unattended gameplay (Level → puzzle → Tap to Skip → repeat)\\n\\n" +
-                "STOP — Cancel immediately\\n\\n" +
-                "HIDE — Stop and remove all floating controls\n\n" +
-                "Reopen this app and tap SHOW FLOATING CONTROLS to restore.\n\n" +
-                "AUTO keeps the screen on while active. Unknown screens and ads " +
-                "are NOT tapped. If recognition repeatedly fails, AUTO pauses. " +
-                "Screenshots stay on the phone."
-            textSize = 16f
-            setTextColor(Color.rgb(29, 47, 68))
-            setLineSpacing(dp(4).toFloat(), 1f)
+            text = "CONTROLS IN WORDSCAPES:\n\n" +
+                "AUTO — Gemma reads menu, wheel, victory and ad close/skip " +
+                "buttons; the phone performs gestures.\n\n" +
+                "SCAN — One Gemma scan of an open puzzle and review.\n\n" +
+                "CAL — Optional wheel crop area; mainly for classic OCR.\n\n" +
+                "STOP — Immediately cancel the current run.\n\n" +
+                "HIDE — Stop and remove controls.\n\n" +
+                "To switch back to the original on-device OCR, uncheck Gemma. " +
+                "Ads are only closed when a visible actionable close/skip button " +
+                "is confirmed. Uncertain screens cause AUTO to pause."
+            textSize=15f
+            setTextColor(Color.rgb(29,47,68))
+            setLineSpacing(dp(4).toFloat(),1f)
         }
         root.addView(instructions, LinearLayout.LayoutParams(-1, -2))
         root.addView(TextView(this).apply {
-            text = "Android 11+ • No PC or ADB • Offline dictionary • On-device OCR"
+            text = "Android 11+ • Gemma via Ollama on your PC • Offline dictionary"
             textSize = 12f
             setTextColor(Color.GRAY)
             gravity = Gravity.CENTER
