@@ -17,7 +17,6 @@ class CalibrationActivity : Activity() {
     private lateinit var seek: SeekBar
     private var center: Spot? = null
     private var radius = 180f
-    private var overrideCount: Int? = null
     private var result = WheelResult(emptyList(), 0f, 0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -29,10 +28,9 @@ class CalibrationActivity : Activity() {
             finish(); return
         }
         bitmap = loaded
-        val previous = Settings.load(this)
+        val previous = Settings.load(this, bitmap.width, bitmap.height)
         center = previous?.center
         radius = previous?.radius ?: bitmap.width * .19f
-        overrideCount = previous?.countOverride
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -62,24 +60,13 @@ class CalibrationActivity : Activity() {
             })
         }
         root.addView(seek)
-        val controls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
-        fun addControl(label: String, action: () -> Unit) {
-            controls.addView(Button(this).apply {
-                text = label
-                setOnClickListener { action() }
-            }, LinearLayout.LayoutParams(0, dp(50), 1f))
-        }
-        addControl("−") { overrideCount = (overrideCount ?: result.inferredCount).minus(1).coerceIn(3, 8); refresh() }
-        addControl("AUTO") { overrideCount = null; refresh() }
-        addControl("+") { overrideCount = (overrideCount ?: result.inferredCount).plus(1).coerceIn(3, 8); refresh() }
-        root.addView(controls)
         val save = Button(this).apply {
             text = "SAVE & RETURN TO GAME"
             setOnClickListener {
                 val c = center
                 if (c == null) Toast.makeText(this@CalibrationActivity, "Tap wheel center first", Toast.LENGTH_SHORT).show()
                 else {
-                    Settings.save(this@CalibrationActivity, Calibration(c, radius, overrideCount))
+                    Settings.save(this@CalibrationActivity, Calibration(c, radius), bitmap.width, bitmap.height)
                     Toast.makeText(this@CalibrationActivity, "Saved. Press SCAN in the game.", Toast.LENGTH_LONG).show()
                     finish()
                 }
@@ -92,9 +79,9 @@ class CalibrationActivity : Activity() {
 
     private fun refresh() {
         val c = center
-        result = if (c == null) WheelResult(emptyList(), 0f, 0) else WheelDetector.detect(bitmap, c, radius, overrideCount)
-        info.text = if (c == null) "1. Tap wheel center in screenshot.  2. Slide radius.  3. Save."
-        else "Detected ${result.inferredCount} letters • radius ${radius.toInt()} px • ${if (overrideCount == null) "AUTO count" else "MANUAL count"}. Markers should sit on the letters."
+        result = if (c == null) WheelResult(emptyList(), 0f, 0) else WheelDetector.detect(bitmap, c, radius)
+        info.text = if (c == null) "ONE-TIME SETUP: tap wheel center, set radius through letters, then Save."
+        else "Saved geometry for ALL levels • radius ${radius.toInt()}px • preview: ${result.inferredCount} letters. Every SCAN detects a new count; correct it in SCAN review if needed."
         preview.invalidate()
     }
 
