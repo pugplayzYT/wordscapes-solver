@@ -728,13 +728,19 @@ class WordscapesService : AccessibilityService() {
                             gemmaLastAction = null
                             gemmaActionFrames = 0
                             val saved = Settings.load(this,screenshot.width,screenshot.height)
+                            // The user's manually highlighted CAL circle
+                            // takes priority. The previous release silently
+                            // ignored it whenever Gemma suggested a (possibly
+                            // tiny) bounding rectangle, causing 1-letter crops.
                             val bounds = when {
+                                saved != null -> android.graphics.RectF(
+                                    saved.center.x-saved.radius,
+                                    saved.center.y-saved.radius,
+                                    saved.center.x+saved.radius,
+                                    saved.center.y+saved.radius
+                                )
                                 scene.wheelBounds != null && scene.confidence >= .35 ->
                                     scene.wheelBounds
-                                saved != null -> android.graphics.RectF(
-                                    saved.center.x-saved.radius,saved.center.y-saved.radius,
-                                    saved.center.x+saved.radius,saved.center.y+saved.radius
-                                )
                                 else -> null
                             }
                             if(bounds == null) {
