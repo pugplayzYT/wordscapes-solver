@@ -33,6 +33,7 @@ class WordscapesService : AccessibilityService() {
     private var pending = ""
     private var pendingPoints: List<Spot> = emptyList()
     private var pendingCalibration: Calibration? = null
+    private var pendingWheel: WheelResult? = null
     private var correctedCount: Int? = null
     private var glyphSamples: List<GlyphMemory.Sample?> = emptyList()
     private var uncertainSlots: List<Int> = emptyList()
@@ -42,6 +43,7 @@ class WordscapesService : AccessibilityService() {
     private var activePoints: List<Spot> = emptyList()
     private var baselineImage: Bitmap? = null
     private var activeCalibration: Calibration? = null
+    private var activeWheel: WheelResult? = null
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -184,49 +186,63 @@ class WordscapesService : AccessibilityService() {
         uncertainSlots = emptyList()
         pendingPoints = emptyList()
         pendingCalibration = null
+        pendingWheel = null
         removeReview()
-        if (!Settings.hasCalibration(this)) { message("Set center + radius with CAL once"); return }
+        if (!Settings.hasCalibration(this)) { message("Set search box with CAL once"); return }
         handler.postDelayed({
             if (ticket != generation) return@postDelayed
             capture { bitmap ->
                 if (ticket != generation) { bitmap?.recycle(); return@capture }
                 if (bitmap == null) return@capture
-                // One saved center and radius are reused, scaled for current screenshot resolution.
+                // Saved box remains fixed; EACH scan searches for the new wheel
+                // center, radius, character count and angular letter positions.
                 val cal = Settings.load(this, bitmap.width, bitmap.height)
                 if (cal == null) {
                     bitmap.recycle()
-                    message("Calibration outside screenshot — use CAL")
+                    message("Invalid search box — tap CAL")
                     return@capture
                 }
-                val result = WheelDetector.detect(bitmap, cal.center, cal.radius, manualCount)
-                if (result.points.size !in 3..8) {
-                    bitmap.recycle()
-                    message("No letters detected — check puzzle screen")
-                    return@capture
-                }
-                pendingPoints = result.points
-                pendingCalibration = cal
-                message("Reading ${result.inferredCount} letters…")
-                ocr.recognize(this, bitmap, result.points, cal.radius) { reading ->
-                    bitmap.recycle()
-                    if (ticket == generation) {
-                        pending = reading.text
-                        glyphSamples = reading.samples
-                        uncertainSlots = reading.uncertainPositions
-                        val autoRun = getSharedPreferences("wordscapes.ocr", MODE_PRIVATE)
-                            .getBoolean("auto_run", true)
-                        if (autoRun && reading.allConfident && result.confidence >= .20f) {
-                            message("OCR checked: $pending — solving…")
-                            startSolving(pending)
+                message("Locating wheel inside saved box…")
+                Thread {
+                    val result = try {
+                        WheelDetector.detectInBox(bitmap, cal.bounds, manualCount)
+                    } catch (_: Exception) {
+                        WheelResult(emptyList(), 0f, 0)
+                    }
+                    handler.post {
+                        if (ticket != generation) {
+                            bitmap.recycle()
+                        } else if (result.points.size !in WheelDetector.MIN_LETTERS..WheelDetector.MAX_LETTERS) {
+                            bitmap.recycle()
+                            message("No wheel located — check saved CAL box")
                         } else {
-                            val uncertain = uncertainSlots.size
-                            message(if (uncertain > 0)
-                                "$uncertain uncertain — review $pending"
-                                else "Detected: $pending — review")
-                            showReview()
+                            pendingPoints = result.points
+                            pendingCalibration = cal
+                            pendingWheel = result
+                            message("Reading ${result.inferredCount} letters…")
+                            ocr.recognize(this, bitmap, result.points, result.radius) { reading ->
+                                bitmap.recycle()
+                                if (ticket == generation) {
+                                    pending = reading.text
+                                    glyphSamples = reading.samples
+                                    uncertainSlots = reading.uncertainPositions
+                                    val autoRun = getSharedPreferences("wordscapes.ocr", MODE_PRIVATE)
+                                        .getBoolean("auto_run", true)
+                                    if (autoRun && reading.allConfident && result.confidence >= .30f) {
+                                        message("OCR checked: $pending — solving…")
+                                        startSolving(pending)
+                                    } else {
+                                        val uncertain = uncertainSlots.size
+                                        message(if (uncertain > 0)
+                                            "$uncertain uncertain — review $pending"
+                                            else "Detected: $pending — review")
+                                        showReview()
+                                    }
+                                }
+                            }
                         }
                     }
-                }
+                }.start()
             }
         }, 300)
     }
@@ -253,7 +269,7 @@ class WordscapesService : AccessibilityService() {
         }
         panel.addView(lettersField, LinearLayout.LayoutParams(-1, dp(54)))
         // Review the newly detected positions without visiting calibration.
-        panel.addView(RingKeyView(pendingPoints, pendingCalibration, pending),
+        panel.addView(RingKeyView(pendingPoints, pendingWheel, pending),
             LinearLayout.LayoutParams(-1, dp(126)))
         panel.addView(TextView(this).apply {
             text = "Wrong NUMBER of letters? Use −/+ (rescans this level). Wrong LETTER? Edit above."
@@ -264,9 +280,9 @@ class WordscapesService : AccessibilityService() {
             countRow.addView(Button(this).apply { text = label; setOnClickListener { action() } },
                 LinearLayout.LayoutParams(0, dp(46), 1f))
         }
-        countButton("− COUNT") { scan((pendingPoints.size - 1).coerceIn(3, 8)) }
+        countButton("− COUNT") { scan((pendingPoints.size - 1).coerceIn(WheelDetector.MIN_LETTERS, WheelDetector.MAX_LETTERS)) }
         countButton("AUTO") { scan() }
-        countButton("+ COUNT") { scan((pendingPoints.size + 1).coerceIn(3, 8)) }
+        countButton("+ COUNT") { scan((pendingPoints.size + 1).coerceIn(WheelDetector.MIN_LETTERS, WheelDetector.MAX_LETTERS)) }
         panel.addView(countRow)
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         row.addView(Button(this).apply { text = "RUN"; setOnClickListener {
@@ -298,6 +314,7 @@ class WordscapesService : AccessibilityService() {
         actualLetters = letters
         activePoints = pendingPoints.toList()
         activeCalibration = cal
+        activeWheel = pendingWheel
         solveWords = WordEngine.solve(letters)
         solveIndex = 0
         isRunning = true
@@ -384,8 +401,10 @@ class WordscapesService : AccessibilityService() {
     private fun wheelGone(bitmap: Bitmap, cal: Calibration): Boolean {
         // We require both visual change AND loss of the ring's normal text pattern.
         val baseline = baselineImage ?: return false
-        val change = meanDiff(baseline, bitmap, cal.center, cal.radius)
-        val visualGone = !WheelDetector.ringStillPresent(bitmap, cal.center, cal.radius)
+        val geometry = activeWheel
+        val change = meanDiff(baseline, bitmap, geometry?.center ?: cal.center,
+            geometry?.radius?.takeIf { it > 0f } ?: cal.radius)
+        val visualGone = !WheelDetector.ringStillPresent(bitmap, cal.bounds)
         return change > 27f && visualGone
     }
 
@@ -409,7 +428,7 @@ class WordscapesService : AccessibilityService() {
     /** Miniature clockwise letter-position key: number and OCR guess per position. */
     private inner class RingKeyView(
         private val positions: List<Spot>,
-        private val calibration: Calibration?,
+        private val wheel: WheelResult?,
         private val letters: String
     ) : View(this@WordscapesService) {
         private val dot = android.graphics.Paint(3).apply { color = android.graphics.Color.rgb(24, 96, 147) }
@@ -421,13 +440,14 @@ class WordscapesService : AccessibilityService() {
         }
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
-            val cal = calibration ?: return
-            val scale = (height * .37f) / cal.radius.coerceAtLeast(1f)
+            val geometry = wheel ?: return
+            val center = geometry.center ?: return
+            val scale = (height * .37f) / geometry.radius.coerceAtLeast(1f)
             val cx = width * .5f
             val cy = height * .5f
             positions.forEachIndexed { i, spot ->
-                val x = cx + (spot.x - cal.center.x) * scale
-                val y = cy + (spot.y - cal.center.y) * scale
+                val x = cx + (spot.x - center.x) * scale
+                val y = cy + (spot.y - center.y) * scale
                 canvas.drawCircle(x, y, dp(18).toFloat(), dot)
                 canvas.drawText("${i + 1}:${letters.getOrNull(i) ?: '?'}", x, y + dp(4), ink)
             }
