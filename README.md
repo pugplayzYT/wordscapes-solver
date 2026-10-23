@@ -7,7 +7,7 @@
 - AccessibilityService (opt-in) captures the game screen with `takeScreenshot()` and draws continuous finger gestures with `dispatchGesture()`.
 - **CAL:** captures Wordscapes, opens a screenshot calibration view; tap wheel center, set letter ring radius with slider; automatically detects 3–8 letter positions/count. You can override the count using `−` or `+`, then return to `AUTO` later.
 - **SCAN:** re-detects positions/count for **each new level**, then runs bundled ML Kit Latin OCR on each letter. **Always review** results (e.g. `I`, `S`, `E`, `F`); no hardcoded E/F replacement. Correct any `?` or misreads right in the floating editor.
-- **RUN:** uses a bundled offline word list (84,378 alphabetic entries, 3–8 characters) plus offline word-frequency rankings to create permutations, preferring familiar words. It also optionally fetches extra candidates from Datamuse (best-effort, in the background). Dispatches continuous swipes, one candidate at a time, then checks whether the wheel disappeared. Two captures must agree before stopping.
+- **RUN:** uses a bundled offline word list (84,377 alphabetic entries, 3–8 characters) plus offline word-frequency rankings to create permutations, preferring familiar words. It also optionally fetches extra candidates from Datamuse (best-effort, in the background). Dispatches continuous swipes, one candidate at a time, then checks whether the wheel disappeared. Two captures must agree before stopping.
 - **STOP:** immediately cancels the remaining queue. Does **not** skip ads, advance results screens, or automatically start the next level.
 
 ## Build / install
@@ -47,8 +47,15 @@
 - `Settings.kt` – saved wheel center/radius
 - `app/src/main/assets/words.txt` – offline word list, derived from CMU Pronouncing Dictionary (see `DICTIONARY_LICENSE.txt`)
 - `DatamuseClient.kt` – best-effort Datamuse vocabulary supplements in a background thread
-- `app/src/main/assets/word_frequency.tsv` – corpus-based word ranking (see `WORD_FREQUENCY_ATTRIBUTION.txt`)
+- `app/src/main/assets/word_frequency.tsv` – offline frequency ranking (see `WORD_FREQUENCY_ATTRIBUTION.txt`)
 
 ## Gradle
 
-`gradle/wrapper/gradle-wrapper.properties` is supplied. The wrapper JAR is not bundled with this ZIP; **open via Android Studio**, which manages Gradle distributions for imported projects. For command-line use, run `gradle wrapper --gradle-version 8.11.1` once if Gradle is installed, or generate wrapper using Android Studio's Gradle tooling.
+`gradle/wrapper/gradle-wrapper.properties` is supplied. The GitHub repository includes the official Gradle 8.11.1 wrapper JAR and launchers. Open the repository root in Android Studio, or use `gradlew.bat assembleDebug` on Windows (with Android SDK and JDK 17 configured).
+
+## GitHub repository notes
+
+The repository includes the source code, the Gradle 8.11.1 wrapper, a generated
+84,377-word CMUdict-based offline list, and a frequency-ranked TSV derived from
+the open 20k English word list (see attribution). The Android app itself remains
+untested on a physical phone; this is source code rather than a prebuilt APK.
