@@ -1,3 +1,49 @@
+# v2.10 — Hidden AI DEBUG viewer (five STOP taps)
+
+To reveal DEBUG, press the floating **STOP** button five times within
+twelve seconds. Each tap still stops gameplay immediately, as usual.
+The purple **DEBUG · AI REQUESTS / RESPONSES** button then stays visible
+in the floating toolbar, even after the service/app restarts. Tap it to
+open an on-device diagnostic viewer.
+
+What DEBUG shows, based on the **real** Ollama HTTP traffic:
+- Local timestamp, configured model, server endpoint, HTTP status/error
+- Every **exact prompt** and model options sent to `/api/chat`
+- The **actual screenshot** sent to Gemma, decoded from the JPEG base64
+  in the outgoing request, not a fabricated preview or later capture
+- The **complete raw Ollama HTTP response body**, including JSON,
+  content, thinking fields and generation metadata when supplied
+- Network/JSON parser exceptions and unsuccessful HTTP statuses
+- Separate records for inference retries (each retry is a distinct POST)
+
+Controls:
+- **REFRESH** to reload the most recent diagnostics (while inference
+  might be ongoing)
+- Select any recorded request from a dropdown (newest first)
+- **COPY PROMPT**, **COPY RESPONSE** and **COPY EXCHANGE** for the
+  selected entry
+- **COPY EXACT REQUEST + IMAGE** copies the complete, unmodified
+  outgoing JSON including its original base64-encoded screenshot
+- **COPY ALL TEXT** copies all recorded prompt/response transcripts
+  without enormous image data
+- **CLEAR** to delete all saved traces after confirmation
+
+The app records the **latest 40 requests** to app-private storage,
+including during normal runs before the DEBUG button is unlocked, to
+ensure failures can be inspected after pressing STOP five times. Older
+entries are automatically removed to bound storage usage; there are no
+changes to the underlying Wordscapes or Royal Match gameplay.
+
+**Privacy:** Screenshots and prompts can contain personal on-screen
+information and the full request JSON includes image data. Diagnostic
+history is local to the app (Android private storage), is not
+uploaded by DEBUG, and can be cleared. Copying to the clipboard or
+sharing log text is a deliberate user action. As with the existing
+app, requests are separately transmitted to the user-configured
+Ollama server on the local PC.
+
+---
+
 # v2.9 — Restore successful multi-letter wheel recognition
 
 Regression fixed: v2.8 switched Gemma to a JSON `{"letters":"WORD"}`
