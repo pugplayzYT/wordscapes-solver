@@ -1,6 +1,101 @@
 # Wordscapes Auto — native Android accessibility app
 
-**A complete Android Studio project (Kotlin, Android 11+).** ADB / Python are not used at runtime.
+**Android Studio / Kotlin, Android 11+.** The classic offline OCR mode needs no PC. The new Gemma mode connects to an Ollama service on your PC by USB ADB reverse or private Wi-Fi.
+
+## Wordscapes Auto 2.0 — Gemma 4 / Ollama mode (new)
+
+**This version introduces a new AI-first mode.** The Android accessibility service
+captures the current Wordscapes screen, sends the screenshot **to your own
+Ollama server on the PC**, and executes validated screen taps and word swipes
+on the phone. It does not require the old fragile wheel detector to recognize
+letters. Gemma supports starting from the home screen.
+
+### First-time PC setup (Windows / USB)
+
+1. Install [Ollama for Windows](https://ollama.com/download/windows).
+2. On your Windows PC, start the Ollama app and verify the installed model:
+
+   ```cmd
+   ollama pull gemma4:12b
+   ollama list
+   ```
+
+   The Ollama app serves the local API on port 11434. Gemma 4 12B can be
+   slow on a GTX 1080 or other 8 GB VRAM GPUs; the model may use PC RAM.
+
+3. Connect the Samsung phone by USB, enable USB debugging, then in **CMD**:
+
+   ```cmd
+   "%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe" devices
+   "%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe" reverse tcp:11434 tcp:11434
+   ```
+
+   Keep USB connected, and ensure the PC **does not go to sleep**.
+
+4. In the Wordscapes Auto 2.0 launcher app on the phone, enable
+   **Use Gemma instead of old wheel detector**.
+   Set Ollama server URL to `http://127.0.0.1:11434`
+   and model to `gemma4:12b`.
+   Tap **SAVE SETTINGS + TEST OLLAMA**; it should report connected
+   and that the model was found.
+
+5. Enable Accessibility for Wordscapes Auto (if not already enabled).
+   Open Wordscapes at the **main menu** and tap the floating **AUTO** button.
+   AUTO ON (green) indicates it is running. Use **STOP** to cancel.
+   No CAL is needed for Gemma mode; CAL still works for the older OCR engine.
+
+For home Wi-Fi use the Windows PC's private LAN IP in the Ollama URL
+instead of loopback and configure Ollama's `OLLAMA_HOST` / Windows Firewall
+for private LAN access. Do **not** forward Ollama port 11434 to the internet.
+USB ADB reverse is recommended because the default Ollama server can remain
+bound to the PC's loopback interface.
+
+### AI control loop
+
+- **Main menu:** a full-screen Gemma screenshot query identifies the actual
+  Level button and its center; two independent screenshot checks are required
+  before a tap is issued by Android's Accessibility gesture service.
+- **Puzzle:** Gemma locates the wheel from a full-screen screenshot; a second,
+  enlarged **wheel crop** is sent to the model to obtain letters *and each
+  letter's touch coordinates*. The crop is then re-read to check the letter
+  sequence and approximate coordinates before any auto-swiping. Existing
+  local dictionary + gesture code enters candidate words.
+- **Win / Tap to Skip:** detects the visible Continue/Tap to Skip control,
+  checks it again, and taps it; then begins looking for the next Level button.
+- **Interstitial ads:** identifies an ad, waits, and closes/skips it
+  **only if the screenshot clearly shows an actionable X, Close, or Skip ad
+  control** on two checks. It never deliberately clicks install, download,
+  purchase, watch-to-earn, or engagement controls. Ads without a usable close
+  option remain on-screen until dismissible; repeated unresolved screens stop
+  AUTO.
+- **Failure behavior:** AI connection failures, disagreeing letter reads,
+  unclear positions, or unrecognized screens cause retries and eventually
+  pause automation rather than guessing at random buttons. The **SCAN** button
+  can perform a single Gemma scan and display an annotated review to diagnose
+  letter-coordinate errors. The old scanner remains available by disabling
+  the Gemma checkbox.
+
+Gemma 4 12B is **not running on the phone**. Ollama/PC must stay awake and
+connected while the app uses the model. App screenshots are sent to the URL
+configured by the user. Keep that URL limited to a trusted local server.
+
+**Limits:** A successful GitHub Actions build confirms only compilation.
+AI vision accuracy, real-world ad layouts, overnight stability, and all
+Wordscapes variants require **on-device testing**. Vision models can read text
+well while still getting exact screen coordinates wrong; this version verifies
+position agreement but cannot guarantee flawless gameplay. Ads may be
+unskippable or show controls late, and the automation never bypasses a timer.
+
+### Local API details
+
+The app uses Ollama's `POST /api/chat` with base64-encoded JPEG screenshots
+in `messages[].images`, `format: "json"`, `stream: false`, and
+`temperature: 0`. Calls are asynchronous on Android worker threads.
+The model name and URL are editable in the app. Model data never ships
+inside the APK. Internet access is requested so Android can access the user
+configured Ollama endpoint and optional legacy dictionary suggestions.
+
+---
 
 ## What it does (v1.5)
 
