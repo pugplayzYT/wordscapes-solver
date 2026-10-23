@@ -42,8 +42,8 @@ class MainActivity : Activity() {
         }, LinearLayout.LayoutParams(-1, dp(62)))
         val instructions = TextView(this).apply {
             text = "2 · Open Wordscapes, then use the floating buttons:\n\n" +
-                "CAL  — Capture puzzle and calibrate with center + radius slider\n\n" +
-                "SCAN — Recognize letters and review them\n\n" +
+                "CAL  — One-time center + radius setup\n\n" +
+                "SCAN — Every level, auto-detect count + letters, then review\n\n" +
                 "RUN  — Swipe possible words until the wheel disappears\n\n" +
                 "STOP — Cancel immediately\n\n" +
                 "After completing a level, advance yourself and press SCAN again. " +
