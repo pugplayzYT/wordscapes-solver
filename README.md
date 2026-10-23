@@ -1,3 +1,35 @@
+# v2.8 — Wordscapes offline dictionary restored; simpler OCR geometry
+
+Wordscapes mode no longer asks the language model to make up words.
+The bundled `words.txt` and `word_frequency.tsv` provide candidates.
+`WordEngine.solve()` ranks full-wheel anagrams and common words ahead
+of obscure words. The bot tries an initial set of up to 260 dictionary
+words, then can expand to 850 total if still unsolved. No Gemini/Gemma
+anagram generation and no Datamuse API are involved in Wordscapes AUTO.
+
+**Wheel vision reliability overhaul:** Previously we asked Gemma for
+the exact 0..1000 coordinates of every single glyph, then rejected
+the whole wheel for any two closely estimated positions ("Duplicated
+letter location") or disagreement between repeated position readings.
+This produced needless retries even when the model read the letters.
+
+In v2.8, Gemma's wheel task is limited to the **character string in
+clockwise order** plus an optional rough coordinate for the topmost
+glyph. Kotlin calculates uniformly spaced ring points from the
+detected wheel bounding rectangle. Thus individual duplicate
+coordinate guesses cannot cause a failure. The app no longer makes a
+second wheel read just to compare fragile coordinate values. The
+wheel crop is expanded to reduce cases where tiles are cut off.
+
+On rare layouts these geometrically estimated touch points may be
+misaligned; use SCAN to inspect the wheel. The model may still misread
+character shapes or tile count, but this change removes one entire
+class of coordinate errors. The review UI remains available.
+
+Royal Match mode is unchanged.
+
+---
+
 ## v2.7 — Wordscapes continuous Gemini/Gemma answer generation
 
 Bug fixed: previous AI-only mode accepted just the first model list

@@ -100,7 +100,7 @@ class MainActivity : Activity() {
             setPadding(0,dp(16),0,dp(9))
         })
         root.addView(CheckBox(this).apply {
-            text="Use Gemma AI (required for Royal Match)"
+            text="Use Gemma to read screens (dictionary solves Wordscapes)"
             textSize=16f
             isChecked=GemmaClient.enabled(this@MainActivity)
             setOnCheckedChangeListener { _, enabled ->
@@ -198,8 +198,9 @@ class MainActivity : Activity() {
         })
         val instructions = TextView(this).apply {
             text = "FLOATING GAME CONTROLS:\n\n" +
-                "AUTO — Gemma reads menu, wheel, victory and ad close/skip " +
-                "buttons, then ranks common grid answers; the phone swipes.\n\n" +
+                "WORDSCAPES AUTO — Gemma reads wheel letters and finds menus. " +
+                "The offline dictionary supplies frequent real words " +
+                "and Android swipes them. No AI word guessing.\\n\\n" +
                 "ROYAL MATCH — AUTO clicks Level/Play, observes the grid, " +
                 "chooses one match-3 swipe, checks what changed, and repeats.\\n\\n" +
                 "SCAN — One Wordscapes wheel scan and review.\\n\\n" +
