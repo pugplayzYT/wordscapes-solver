@@ -50,23 +50,34 @@ class WheelVision {
             model.process(InputImage.fromBitmap(bitmap,0)).addOnCompleteListener { task ->
                 val out=mutableListOf<Evidence>()
                 if(task.isSuccessful) {
-                    for(block in task.result.textBlocks) for(line in block.lines)
+                    // ML Kit groups nearby glyphs into entire words.
+                    // OLD BUG: element.text.length != 1 discarded whole
+                    // groups, even when every Symbol had a valid A-Z box.
+                    // Extract individual Symbol bounding boxes instead.
+                    fun addGlyph(text:String,rect:Rect?) {
+                        val value=text.trim().uppercase(Locale.US)
+                            .replace('0','O')
+                        if(value.length!=1||value[0] !in 'A'..'Z')return
+                        val b=rect ?:return
+                        val glyph=Spot(region.left+b.exactCenterX()/scale,
+                            region.top+b.exactCenterY()/scale)
+                        val d=hypot(glyph.x-c.x,glyph.y-c.y)
+                        val height=b.height()/scale
+                        if(d !in (r*.20f)..(r*.97f))return
+                        if(height !in (r*.045f)..(r*.48f))return
+                        if(b.width()/scale>r*.45f)return
+                        out.add(Evidence(glyph,value[0],2.7f))
+                    }
+                    for(block in task.result.textBlocks)for(line in block.lines)
                         for(element in line.elements) {
-                            // Wordscapes tiles are letters only. ML Kit often calls a round
-                            // uppercase O the digit 0; normalize it here before
-                            // the A-Z filter silently drops that glyph.
-                            val letters=element.text.trim().uppercase(Locale.US)
-                                .replace('0','O')
-                            if(letters.length!=1||letters[0] !in 'A'..'Z') continue
-                            val rect=element.boundingBox ?: continue
-                            val glyph=Spot(region.left+rect.exactCenterX()/scale,
-                                region.top+rect.exactCenterY()/scale)
-                            val d=hypot(glyph.x-c.x,glyph.y-c.y)
-                            val height=rect.height()/scale
-                            if(d !in (r*.24f)..(r*.93f)) continue
-                            if(height !in (r*.060f)..(r*.40f)) continue
-                            if(rect.width()/scale > r*.38f) continue
-                            out.add(Evidence(glyph,letters[0],2.7f))
+                            val symbols=element.symbols
+                            if(symbols.isNotEmpty()) {
+                                for(symbol in symbols) {
+                                    addGlyph(symbol.text,symbol.boundingBox)
+                                }
+                            } else {
+                                addGlyph(element.text,element.boundingBox)
+                            }
                         }
                 }
                 done(out)
