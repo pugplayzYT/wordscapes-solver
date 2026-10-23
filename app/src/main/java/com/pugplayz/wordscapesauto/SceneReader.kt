@@ -41,7 +41,7 @@ class SceneReader {
                        name=="level") {
                         if(box.centerY()>bitmap.height*.26f &&
                             box.centerY()<bitmap.height*.91f &&
-                            box.centerX() in (bitmap.width*.15f)..(bitmap.width*.85f))
+                            box.exactCenterX() in (bitmap.width*.15f)..(bitmap.width*.85f))
                             candidates.add(Action(Kind.LEVEL_BUTTON,box.exactCenterX(),
                                 box.exactCenterY(),raw))
                     }
