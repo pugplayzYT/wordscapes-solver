@@ -2,6 +2,8 @@ package com.pugplayz.wordscapesauto
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.os.Handler
+import android.os.Looper
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -27,6 +29,8 @@ data class LetterScan(
  */
 class LetterReader {
     private val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+    private val ui = Handler(Looper.getMainLooper())
+    private var tess: SingleCharacterModel? = null
     private data class Decision(val char: Char, val confident: Boolean)
 
     fun recognize(
@@ -39,6 +43,7 @@ class LetterReader {
     ) {
         val letters = StringBuilder()
         val uncertain = mutableListOf<Int>()
+        if (tess == null) tess = SingleCharacterModel(context.applicationContext)
         val samples = positions.map { GlyphMemory.extract(bitmap, it, radius) }
         fun next(i: Int) {
             if (i == positions.size) {
@@ -85,24 +90,41 @@ class LetterReader {
                 val veryStrongMemory = learned != null &&
                     learned.score >= .93f && learned.margin >= .12f
 
-                // Only verified user corrections can teach the local classifier;
-                // never silently apply an E/F/S rewrite based on one heuristic.
-                val chosen = if (solidMemory) learned!!.letter else mlChar
-                val reliable = when {
-                    chosen == '?' -> false
-                    veryStrongMemory -> true
-                    solidMemory && mlChar == learned!!.letter -> true
-                    solidMemory -> false   // plausible conflict: show review
-                    voteCount == 3 -> true
-                    voteCount == 2 && !other -> true
-                    else -> false
-                }
-                if (chosen != '?') {
-                    callback(Decision(chosen, reliable))
-                } else {
-                    val mayBeI = looksLikeNarrowI(bitmap, pos, radius * .22f)
-                    callback(Decision(if (mayBeI) 'I' else '?', false))
-                }
+                // Independent pretrained LSTM model: do not assume three
+                // variants of the same ML Kit model are three independent votes.
+                val neural = tess
+                Thread {
+                    val secondModel = neural?.read(bitmap, pos, radius)
+                    ui.post {
+                        val tessChar = secondModel?.letter
+                        val tessConf = secondModel?.confidence ?: 0
+                        val chosen = when {
+                            veryStrongMemory && learned != null -> learned.letter
+                            tessChar != null && tessConf >= 78 -> tessChar
+                            solidMemory && learned != null && mlChar == learned.letter -> mlChar
+                            tessChar != null && tessConf >= 48 && mlChar == '?' -> tessChar
+                            else -> mlChar
+                        }
+                        val confident = when {
+                            chosen == '?' -> false
+                            tessChar != null && chosen == tessChar &&
+                                tessConf >= 84 -> true
+                            tessChar != null && chosen == tessChar &&
+                                tessConf >= 65 && mlChar == tessChar -> true
+                            veryStrongMemory && learned != null &&
+                                chosen == learned.letter -> true
+                            tessChar == null && voteCount == 3 &&
+                                solidMemory && learned?.letter == chosen -> true
+                            else -> false
+                        }
+                        if(chosen != '?') {
+                            callback(Decision(chosen, confident))
+                        } else {
+                            val maybeI = looksLikeNarrowI(bitmap,pos,radius*.22f)
+                            callback(Decision(if(maybeI) 'I' else '?',false))
+                        }
+                    }
+                }.start()
                 return
             }
             val crop = preparedCrop(bitmap, pos, radius, pass)
@@ -197,5 +219,5 @@ class LetterReader {
         return height > half * .55f && width.toFloat() / height < .34f
     }
 
-    fun close() { recognizer.close() }
+    fun close() { recognizer.close(); tess?.close() }
 }
