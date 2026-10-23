@@ -156,7 +156,7 @@ class WheelVision {
                     }
                 }
                 val gw=rightmost-leftmost+1;val gh=lower-upper+1
-                if(gh !in minH..maxH||gw<size*.009f||gw>size*.20f)continue
+                if(gh.toFloat() !in minH..maxH||gw<size*.009f||gw>size*.20f)continue
                 if(mass<max(8,gh*1.3f).toInt()||mass>gw*gh*.88f)continue
                 val point=Spot(area.center.x+(leftmost+rightmost-size)*.5f*scale,
                     area.center.y+(upper+lower-size)*.5f*scale)
@@ -262,7 +262,9 @@ class WheelVision {
             (atan2(it.at.y-hit.origin.y,it.at.x-hit.origin.x)+2*PI+PI/2)%(2*PI)
         }
         val anchors=ordered.count{it.letter!=null}
-        val confidence=(.34f*hit.coverage+.66f*anchors/hit.n.toFloat()).coerceIn(0f,1f)
+        val shapeAgreement=(hit.score/5f).coerceIn(0f,1f)
+        val confidence=(.50f*hit.coverage+.40f*shapeAgreement+
+            .10f*anchors/hit.n.toFloat()).coerceIn(0f,1f)
         return Reading(WheelResult(ordered.map{it.at},confidence,hit.n,
             hit.origin,hit.radius),ordered.map{it.letter},anchors,spots.size)
     }
