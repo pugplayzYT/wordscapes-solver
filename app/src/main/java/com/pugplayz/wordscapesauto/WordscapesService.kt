@@ -32,6 +32,8 @@ class WordscapesService : AccessibilityService() {
     private var gemmaFailures = 0
     private var gemmaLastAction: GemmaClient.Scene? = null
     private var gemmaActionFrames = 0
+    private var gemmaLastDispatched = ""
+    private var gemmaRepeatTaps = 0
     private var autoPilot = false
     private var autoRetries = 0
     private var autoUiRetries = 0
@@ -240,6 +242,8 @@ class WordscapesService : AccessibilityService() {
         gemmaFailures = 0
         gemmaLastAction = null
         gemmaActionFrames = 0
+        gemmaLastDispatched = ""
+        gemmaRepeatTaps = 0
         autoRetries = 0
         autoUiRetries = 0
         lastUiAction = null
@@ -259,6 +263,8 @@ class WordscapesService : AccessibilityService() {
             gemmaFailures = 0
             gemmaLastAction = null
             gemmaActionFrames = 0
+            gemmaLastDispatched = ""
+            gemmaRepeatTaps = 0
             keepAwake(true)
             updateAutoControl()
             gemmaInspect()
@@ -311,6 +317,11 @@ class WordscapesService : AccessibilityService() {
                         return@post
                     }
                     message("Gemma: ${scene.state} / ${scene.action}")
+                    if(gemmaLastDispatched.isNotEmpty() &&
+                        !gemmaLastDispatched.startsWith("${scene.state}/")) {
+                        gemmaRepeatTaps=0
+                        gemmaLastDispatched=""
+                    }
                     when(scene.state) {
                         "puzzle" -> {
                             gemmaLastAction = null
@@ -333,11 +344,27 @@ class WordscapesService : AccessibilityService() {
                             }
                         }
                         "menu","victory","ad" -> {
-                            screenshot.recycle()
                             if(oneShot) {
+                                screenshot.recycle()
                                 message("AI sees ${scene.state}. Tap AUTO to navigate.")
                             } else {
-                                gemmaNavigate(scene)
+                                val targetKind=when(scene.state) {
+                                    "menu" -> SceneReader.Kind.LEVEL_BUTTON
+                                    "victory" -> SceneReader.Kind.TAP_TO_SKIP
+                                    else -> SceneReader.Kind.AD_CLOSE
+                                }
+                                // Independent, fast OCR grounds the Level
+                                // button at a real text rectangle instead
+                                // of trusting Gemma's approximate x/y.
+                                sceneReader.inspect(screenshot,targetKind) { anchor ->
+                                    handler.post {
+                                        screenshot.recycle()
+                                        if(ticket==generation && autoPilot && gemmaMode) {
+                                            gemmaNavigate(scene,anchor,
+                                                screenshot.width,screenshot.height)
+                                        }
+                                    }
+                                }
                             }
                         }
                         else -> {
@@ -446,49 +473,103 @@ class WordscapesService : AccessibilityService() {
         if(oneShot) showReview() else startSolving(letters)
     }
 
-    private fun gemmaNavigate(scene:GemmaClient.Scene) {
-        if (!autoPilot || !gemmaMode) return
+    /**
+     * A screen classification of MENU/LEVEL is not itself a valid tap.
+     * If ML Kit sees the literal Level button, trust its glyph bounding
+     * box, which is significantly more precise than an LLM point estimate.
+     * Otherwise use Gemma's coordinate only after two stable readings.
+     * Ads ALWAYS require a visible close affordance plus strong evidence.
+     */
+    private fun gemmaNavigate(scene:GemmaClient.Scene,
+                              ocr:SceneReader.Action?,
+                              screenWidth:Int,screenHeight:Int) {
+        if(!autoPilot || !gemmaMode)return
         val desired=when(scene.state) {
             "menu" -> "level"
             "victory" -> "skip"
             "ad" -> "close_ad"
             else -> "none"
         }
-        // Ads do not have a "skip" action until an actual close/skip
-        // affordance is visible. No arbitrary "X in top right" coordinates.
-        if(scene.action != desired || scene.point==null ||
-            scene.confidence < .79) {
-            gemmaWait(if(scene.state=="ad")"waiting for ad close/skip"
-                      else "button not confirmed")
+        if(scene.action!=desired) {
+            gemmaWait("AI: ${scene.state}, no ${desired} control")
             return
         }
-        val point=scene.point
-        val previous=gemmaLastAction
-        if(previous?.state==scene.state && previous.action==scene.action &&
-            previous.point!=null &&
-            hypot(previous.point.x-point.x,previous.point.y-point.y)<dp(60))
-            gemmaActionFrames++
-        else {
-            gemmaActionFrames=1
-            gemmaLastAction=scene
+        val expected=when(scene.state) {
+            "menu" -> SceneReader.Kind.LEVEL_BUTTON
+            "victory" -> SceneReader.Kind.TAP_TO_SKIP
+            else -> SceneReader.Kind.AD_CLOSE
         }
-        if(gemmaActionFrames<2) {
-            handler.postDelayed({if(autoPilot&&gemmaMode)gemmaInspect()},750)
+        val verifiedOCR=ocr?.takeIf{it.kind==expected}
+        val target=verifiedOCR?.let{Spot(it.x,it.y)} ?: scene.point
+        if(target==null) {
+            gemmaWait("AI sees $desired but returned NO x/y; OCR found none")
+            return
+        }
+        // Hard coordinate rejection guards against malformed JSON (e.g.
+        // x=0.7 rather than 700 in the normalized 0-1000 format).
+        if(target.x !in screenWidth*.04f..screenWidth*.96f ||
+           target.y !in screenHeight*.11f..screenHeight*.96f) {
+            gemmaWait("AI target off screen: ${target.x.toInt()},${target.y.toInt()}")
+            return
+        }
+        // Ad closes must be actual observed X/Skip buttons; a hallucinated
+        // model coordinate is insufficient for unattended navigation.
+        if(scene.state=="ad" && verifiedOCR==null) {
+            gemmaWait("Ad present: waiting for visible Close/Skip label")
+            return
+        }
+        // Independent OCR + Gemma screen agreement is strong evidence for
+        // menu/victory; don't demand an arbitrary 0.79 LLM self-confidence.
+        val supported=verifiedOCR!=null || scene.confidence>=.52
+        if(!supported) {
+            gemmaWait("Gemma $desired confidence ${(scene.confidence*100).toInt()}%")
+            return
+        }
+        val previous=gemmaLastAction
+        val tolerance=if(verifiedOCR!=null) dp(110) else dp(90)
+        val steady=previous?.state==scene.state &&
+            previous.action==scene.action &&
+            previous.point!=null &&
+            hypot(previous.point.x-target.x,previous.point.y-target.y)<tolerance
+        if(steady) gemmaActionFrames++ else {
+            gemmaActionFrames=1
+            // Save the chosen OCR-anchored screen position for next-frame
+            // comparison, not Gemma's potentially volatile coordinate.
+            gemmaLastAction=scene.copy(point=target)
+        }
+        // Two independent full-screen reads for ad navigation, even when
+        // the OCR label is present. For ordinary Level buttons the ML Kit
+        // evidence itself is independent from the Gemma classification,
+        // so a single model frame is sufficient.
+        val checksNeeded=if(verifiedOCR!=null && scene.state!="ad")1 else 2
+        if(gemmaActionFrames<checksNeeded) {
+            message("AI $desired @ ${target.x.toInt()},${target.y.toInt()} • verifying")
+            handler.postDelayed({if(autoPilot&&gemmaMode)gemmaInspect()},850)
+            return
+        }
+        val signature="${scene.state}/$desired"
+        if(gemmaLastDispatched==signature)gemmaRepeatTaps++
+        else {gemmaLastDispatched=signature;gemmaRepeatTaps=1}
+        if(gemmaRepeatTaps>3) {
+            stopAutomation("AI paused: $desired tap did not change screen")
             return
         }
         gemmaActionFrames=0
         gemmaLastAction=null
         gemmaIdleCount=0
-        message("Gemma: tapping ${scene.action}")
-        tapAt(point.x,point.y) { good ->
-            if(!autoPilot || !gemmaMode) return@tapAt
+        message("AI tapping $desired: ${target.x.toInt()},${target.y.toInt()}")
+        android.util.Log.i("WordscapesAuto",
+            "Gemma $signature tapping (${target.x.toInt()},${target.y.toInt()}) " +
+            "model confidence=${scene.confidence}, OCR=${verifiedOCR?.text}")
+        tapAt(target.x,target.y) { good ->
+            if(!autoPilot || !gemmaMode)return@tapAt
             if(!good) {
-                stopAutomation("Gemma tap failed")
+                stopAutomation("AI tap gesture was rejected by Android")
                 return@tapAt
             }
             handler.postDelayed({
-                if(autoPilot&&gemmaMode) gemmaInspect()
-            },if(scene.state=="ad")1800 else 1550)
+                if(autoPilot && gemmaMode)gemmaInspect()
+            },if(scene.state=="ad")2100 else 1800)
         }
     }
 
