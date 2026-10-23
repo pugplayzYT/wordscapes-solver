@@ -433,15 +433,42 @@ class GemmaClient(private val context: Context) {
                 if(action=="swipe" && p2==null)error("AI missing swipe end")
                 if(scene!="board" && action=="swipe")
                     error("Can only swipe in live board")
-                if(scene=="board" && action=="tap") {
-                    // Only tap a visibly free IN-BOARD power-up;
-                    // paid booster toolbar taps are forbidden.
-                    if(!label.contains("rocket",true) &&
-                       !label.contains("tnt",true) &&
-                       !label.contains("propeller",true) &&
-                       !label.contains("light ball",true) &&
-                       !label.contains("power-up",true))
-                        error("Board tap lacks free power-up confirmation")
+                if(action=="tap") {
+                    val low=label.lowercase(Locale.US)
+                    if(setOf("buy","purchase","coins","shop","offer",
+                            "watch ad","extra moves","boosters").any {
+                            low.contains(it) })
+                        error("AI action could spend game currency")
+                    if(scene=="board") {
+                        // Board taps are allowed only for a clearly
+                        // identified free IN-BOARD special power-up.
+                        if(!listOf("rocket","tnt","propeller","light ball",
+                                "power-up").any{low.contains(it)})
+                            error("Board tap lacks free power-up confirmation")
+                        val board=json.optJSONObject("board")
+                        val l=board?.optDouble("left",Double.NaN) ?:Double.NaN
+                        val t=board?.optDouble("top",Double.NaN) ?:Double.NaN
+                        val r=board?.optDouble("right",Double.NaN) ?:Double.NaN
+                        val b=board?.optDouble("bottom",Double.NaN) ?:Double.NaN
+                        if(!l.isFinite() || !t.isFinite() ||
+                            !r.isFinite() || !b.isFinite() ||
+                            x1 !in l..r || y1 !in t..b)
+                            error("Free power-up must be inside visible board")
+                    }
+                    if(scene=="failed" &&
+                        !low.contains("retry") && !low.contains("try again"))
+                        error("Failure screen tap is not a free retry")
+                    if(scene=="ad" && !listOf("close","skip","x").any {
+                            low.contains(it) })
+                        error("Ad tap is not visibly Close/Skip")
+                    if(scene=="prelevel" &&
+                        !low.contains("play") && !low.contains("start"))
+                        error("Prelevel tap is not Play")
+                    if(scene=="menu" && !low.contains("level"))
+                        error("Menu tap is not Level")
+                    if(scene=="victory" && !listOf("continue","next",
+                            "level","close").any{low.contains(it)})
+                        error("Victory tap is not Next/Continue")
                 }
                 val sig=if(action=="wait")"wait" else
                     "$scene:$action:${p1?.x?.toInt()},${p1?.y?.toInt()}-" +
