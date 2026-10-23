@@ -38,6 +38,7 @@ class WordscapesService : AccessibilityService() {
     private var royalUnknown = 0
     private var royalNoProgress = 0
     private var royalLastAction = ""
+    private var royalAwaitingOutcome = false
     private var royalLastDescription = ""
     private var royalLastScene = ""
     private var royalRecentFrame: Bitmap? = null
@@ -383,6 +384,7 @@ class WordscapesService : AccessibilityService() {
         royalMode = false
         royalRecentFrame?.recycle()
         royalRecentFrame = null
+        royalAwaitingOutcome=false
         royalProposed = null
         royalStableActions = 0
         royalLastExecuted = ""
@@ -463,6 +465,7 @@ class WordscapesService : AccessibilityService() {
         royalUnknown=0
         royalNoProgress=0
         royalLastAction="none"
+        royalAwaitingOutcome=false
         royalLastDescription="No previous move"
         royalLastScene=""
         royalRecentFrame?.recycle()
@@ -523,13 +526,16 @@ class WordscapesService : AccessibilityService() {
             previous?.recycle()
             royalRecentFrame=thumb
 
-            val resultSummary=if(royalLastAction=="none") {
-                "First observation: no action taken yet."
+            val resultSummary=if(!royalAwaitingOutcome) {
+                "No new move since the previous observation. " +
+                "Make a new, grounded decision from this screenshot."
             } else if(score<6.5f) {
+                royalAwaitingOutcome=false
                 royalNoProgress++
                 "Only small visual change after $royalLastDescription; " +
                 "the previous move may have FAILED. Do not repeat it."
             } else {
+                royalAwaitingOutcome=false
                 royalNoProgress=0
                 "Screen visibly changed after $royalLastDescription " +
                 "(visual difference ${score.toInt()}). Re-evaluate targets."
@@ -551,7 +557,6 @@ class WordscapesService : AccessibilityService() {
                             ?: "Gemma returned invalid move")
                         return@post
                     }
-                    royalUnknown=0
                     royalApplyPlan(plan)
                 }
             }
@@ -612,6 +617,7 @@ class WordscapesService : AccessibilityService() {
         }
         royalStableActions=0
         royalProposed=null
+        royalUnknown=0
         val repeated=plan.signature==royalLastExecuted
         royalRepeatCount=if(repeated)royalRepeatCount+1 else 1
         if(royalRepeatCount>=4) {
@@ -637,6 +643,7 @@ class WordscapesService : AccessibilityService() {
             }else {
                 royalLastExecuted=plan.signature
                 royalLastAction=plan.action
+                royalAwaitingOutcome=true
                 royalLastDescription="${plan.action} ${plan.description}"
                 royalLastScene=state
                 if(state=="board")royalMoves++
@@ -1221,6 +1228,11 @@ class WordscapesService : AccessibilityService() {
     }
 
     private fun calibrate() {
+        if(getSharedPreferences("wordscapes.game",MODE_PRIVATE)
+                .getString("mode","wordscapes")=="royal") {
+            message("Royal Match needs no wheel CAL")
+            return
+        }
         stopAutomation("Capturing calibration")
         removeReview()
         // No ad or navigation button interaction. User must have puzzle visible.
@@ -1243,6 +1255,11 @@ class WordscapesService : AccessibilityService() {
 
     /** A new level always begins in AUTO mode. Manual corrections are for one puzzle only. */
     private fun scan(manualCount: Int? = null) {
+        if(getSharedPreferences("wordscapes.game",MODE_PRIVATE)
+                .getString("mode","wordscapes")=="royal") {
+            message("Royal Match is controlled using AUTO")
+            return
+        }
         if(GemmaClient.enabled(this)) {
             if(autoPilot && gemmaMode) {
                 message("AI handles scanning automatically")
