@@ -5,8 +5,8 @@
 ## What it does
 
 - AccessibilityService (opt-in) captures the game screen with `takeScreenshot()` and draws continuous finger gestures with `dispatchGesture()`.
-- **CAL:** captures Wordscapes, opens a screenshot calibration view; tap wheel center, set letter ring radius with slider; automatically detects 3–8 letter positions/count. You can override the count using `−` or `+`, then return to `AUTO` later.
-- **SCAN:** re-detects positions/count for **each new level**, then runs bundled ML Kit Latin OCR on each letter. **Always review** results (e.g. `I`, `S`, `E`, `F`); no hardcoded E/F replacement. Correct any `?` or misreads right in the floating editor.
+- **CAL (one time):** save only the wheel center and ring radius. No letter count is stored. Geometry scales to current screen resolution.
+- **SCAN (every new level):** automatically detect the current letter count and positions from a fresh screenshot using the saved geometry; run ML Kit OCR; show a numbered ring preview and editable letters. If a position is missing, use `− COUNT` or `+ COUNT` in review to rescan just this level. `AUTO` resets the count to detection. These buttons do not change calibration.
 - **RUN:** uses a bundled offline word list (84,377 alphabetic entries, 3–8 characters) plus offline word-frequency rankings to create permutations, preferring familiar words. It also optionally fetches extra candidates from Datamuse (best-effort, in the background). Dispatches continuous swipes, one candidate at a time, then checks whether the wheel disappeared. Two captures must agree before stopping.
 - **STOP:** immediately cancels the remaining queue. Does **not** skip ads, advance results screens, or automatically start the next level.
 
@@ -17,9 +17,9 @@
 3. Connect your Samsung via USB (Developer options → USB debugging). Click **Run ▶** in Android Studio and choose the phone.
 4. Open app → tap **Enable Accessibility Service** → enable **Wordscapes Auto accessibility**. If Android blocks the sideloaded service, go to Settings → Apps → Wordscapes Auto → ⋮ → **Allow restricted settings** (when that option exists), then retry.
 5. Launch a Wordscapes level. Floating buttons appear near the top: `CAL`, `SCAN`, `STOP`.
-6. Tap **CAL**, touch the wheel's center in the screenshot, move radius slider until the ring crosses the middle of the letter glyphs. Confirm green markers/count; manually override count if auto is wrong. Tap **SAVE & RETURN TO GAME**.
-7. Tap **SCAN**. Check the letter string in the floating panel. Correct any `?` or mistaken letter, then tap **RUN**. To abort, tap **STOP**.
-8. When the puzzle finishes, tap through result/ads yourself. On the next level, tap **SCAN** again. The saved center/radius are reused and letter positions/count are recalculated every time.
+6. **Once:** tap **CAL**, select the center of the wheel, move the radius slider until the yellow circle passes through the letters, then **SAVE**.
+7. **Each level:** tap **SCAN**. Check the detected positions/count in the ring preview and correct any `?` or mistaken letter in the editor. Use `− COUNT` or `+ COUNT` for a missed/extra letter **without recalibrating**. Press **RUN** or **STOP**.
+8. Advance through level results and ads yourself. On the next puzzle tap **SCAN again**; the letter count resets to automatic detection.
 
 ## Design and privacy
 
@@ -30,7 +30,7 @@
 ## Known limitations and debugging
 
 - **This source is not device-tested here**; no Android SDK/device is available in the build environment. It is an Android Studio project, not an already compiled APK.
-- Letter positions/count depend on the specific Wordscapes visual design. If markers are wrong, adjust radius or use `+ / −` and inspect the preview.
+- Letter positions/count depend on the game UI. Use `− COUNT` / `+ COUNT` in SCAN review if detection misses a position; only repeat CAL if the actual wheel center or ring radius has moved.
 - OCR of isolated characters can misread letters; manual review is intentionally required. `I` uses a narrow-stroke fallback **only** when ML Kit returns no letter; it never rewrites an `S`, `E`, or `F` that was recognized.
 - Wordscapes accepts only a subset of dictionary words. You may see rejected swipes. All 84k words are drawn from a pronunciation-dictionary vocabulary and can contain unusual/proper words. The offline solver starts with up to 130 candidates and can grow to 170 if online extras arrive. Some puzzles may need more words or a narrower accepted-word list.
 - Completion detection is visual and may incorrectly stop or fail to stop on animations. `STOP` always cancels the pending queue.
@@ -76,3 +76,7 @@ The repository includes the source code, the Gradle 8.11.1 wrapper, a generated
 84,377-word CMUdict-based offline list, and a frequency-ranked TSV derived from
 the open 20k English word list (see attribution). The Android app itself remains
 untested on a physical phone; this is source code rather than a prebuilt APK.
+
+## Version 1.1 — one-time calibration
+
+Wheel center and radius persist across app launches. The old saved letter-count override is removed. Every new SCAN automatically redetects 3–8 positions; wrong counts can be corrected using `− COUNT`, `AUTO`, `+ COUNT` without visiting CAL. Android GitHub Actions builds and uploads a debug APK on each push.
