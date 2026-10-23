@@ -11,6 +11,7 @@ import android.widget.*
 
 class MainActivity : Activity() {
     private lateinit var state: TextView
+    private lateinit var showControlsButton: Button
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val root = LinearLayout(this).apply {
@@ -40,12 +41,27 @@ class MainActivity : Activity() {
             text = "1 · ENABLE ACCESSIBILITY SERVICE"
             setOnClickListener { startActivity(Intent(AndroidSettings.ACTION_ACCESSIBILITY_SETTINGS)) }
         }, LinearLayout.LayoutParams(-1, dp(62)))
+        showControlsButton = Button(this).apply {
+            text = "SHOW FLOATING CONTROLS"
+            setOnClickListener {
+                val service = WordscapesService.instance
+                if (service == null) {
+                    Toast.makeText(this@MainActivity, "Enable Accessibility Service first.", Toast.LENGTH_LONG).show()
+                } else if (service.showControls()) {
+                    Toast.makeText(this@MainActivity, "Controls restored. Return to Wordscapes.", Toast.LENGTH_SHORT).show()
+                    refreshStatus()
+                }
+            }
+        }
+        root.addView(showControlsButton, LinearLayout.LayoutParams(-1, dp(62)))
         val instructions = TextView(this).apply {
-            text = "2 · Open Wordscapes, then use the floating buttons:\n\n" +
+            text = "2 · Tap SHOW CONTROLS if hidden, then open Wordscapes:\n\n" +
                 "CAL  — One-time center + radius setup\n\n" +
                 "SCAN — Every level, auto-detect count + letters, then review\n\n" +
                 "RUN  — Swipe possible words until the wheel disappears\n\n" +
                 "STOP — Cancel immediately\n\n" +
+                "HIDE — Stop and remove all floating controls\n\n" +
+                "Reopen this app and tap SHOW FLOATING CONTROLS to restore.\n\n" +
                 "After completing a level, advance yourself and press SCAN again. " +
                 "Ads are NOT touched. Screenshots stay on the phone."
             textSize = 16f
@@ -66,9 +82,20 @@ class MainActivity : Activity() {
     }
     override fun onResume() {
         super.onResume()
-        state.text = if (WordscapesService.instance != null) "● Service ON — return to game to use CAL / SCAN"
-        else "○ Service OFF — enable it in Android Accessibility settings"
-        state.setTextColor(if (WordscapesService.instance != null) Color.rgb(10, 130, 91) else Color.rgb(160, 88, 21))
+        refreshStatus()
+    }
+
+    private fun refreshStatus() {
+        val service = WordscapesService.instance
+        val visible = service?.areControlsVisible() == true
+        state.text = when {
+            service == null -> "○ Service OFF — enable in Android Accessibility settings"
+            visible -> "● Service ON — floating controls visible"
+            else -> "● Service ON — controls hidden (tap SHOW to restore)"
+        }
+        state.setTextColor(if (service != null) Color.rgb(10, 130, 91) else Color.rgb(160, 88, 21))
+        showControlsButton.isEnabled = service != null && !visible
+        showControlsButton.text = if (visible) "FLOATING CONTROLS ALREADY VISIBLE" else "SHOW FLOATING CONTROLS"
     }
     private fun dp(v: Int) = (v * resources.displayMetrics.density + .5f).toInt()
 }

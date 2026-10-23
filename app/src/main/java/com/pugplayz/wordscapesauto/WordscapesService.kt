@@ -25,6 +25,7 @@ class WordscapesService : AccessibilityService() {
     private val handler = Handler(Looper.getMainLooper())
     private val ocr = LetterReader()
     private lateinit var topBar: LinearLayout
+    private val overlayStore get() = getSharedPreferences("wordscapes.overlay", android.content.Context.MODE_PRIVATE)
     private lateinit var status: TextView
     private var reviewPanel: LinearLayout? = null
     private var isRunning = false
@@ -45,7 +46,7 @@ class WordscapesService : AccessibilityService() {
         instance = this
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
         WordEngine.load(this)
-        buildBar()
+        if (!overlayStore.getBoolean("hidden", false)) buildBar()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) { /* Intentionally unused. */ }
@@ -53,7 +54,7 @@ class WordscapesService : AccessibilityService() {
     override fun onDestroy() {
         stop("Service disabled")
         removeReview()
-        if (::topBar.isInitialized) try { wm.removeView(topBar) } catch (_: Exception) {}
+        if (::topBar.isInitialized && topBar.isAttachedToWindow) try { wm.removeView(topBar) } catch (_: Exception) {}
         baselineImage?.recycle(); baselineImage = null
         ocr.close()
         instance = null
@@ -72,6 +73,7 @@ class WordscapesService : AccessibilityService() {
             }
 
     private fun buildBar() {
+        if (::topBar.isInitialized && topBar.isAttachedToWindow) return
         topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -86,6 +88,7 @@ class WordscapesService : AccessibilityService() {
         topBar.addView(button("CAL") { calibrate() })
         topBar.addView(button("SCAN") { scan() })
         topBar.addView(button("STOP") { stop("Stopped by user") })
+        topBar.addView(button("HIDE") { hideControls() })
         status = TextView(this).apply {
             text = "Ready"
             setTextColor(android.graphics.Color.WHITE)
@@ -93,8 +96,30 @@ class WordscapesService : AccessibilityService() {
             maxLines = 2
             setPadding(dp(6), 0, 0, 0)
         }
-        topBar.addView(status, LinearLayout.LayoutParams(dp(110), -2))
+        topBar.addView(status, LinearLayout.LayoutParams(dp(85), -2))
         wm.addView(topBar, overlayParams(-2, dp(54), false, dp(30)))
+    }
+
+    /** HIDE removes ALL floating views, cancels the solve queue, and stays hidden until SHOW in the app. */
+    private fun hideControls() {
+        stop("Controls hidden")
+        removeReview()
+        overlayStore.edit().putBoolean("hidden", true).apply()
+        if (::topBar.isInitialized && topBar.isAttachedToWindow) {
+            try { wm.removeView(topBar) } catch (_: Exception) {}
+        }
+    }
+
+    fun areControlsVisible(): Boolean =
+        ::topBar.isInitialized && topBar.isAttachedToWindow
+
+    /** Called from MainActivity's SHOW CONTROLS button. No accessibility restart needed. */
+    fun showControls(): Boolean {
+        if (!::wm.isInitialized) return false
+        overlayStore.edit().putBoolean("hidden", false).apply()
+        if (!areControlsVisible()) buildBar()
+        message("Ready")
+        return true
     }
 
     private fun message(text: String) {
