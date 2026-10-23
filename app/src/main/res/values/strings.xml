@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Wordscapes Auto</string>
+    <string name="service_description">Takes screenshots only when you tap Scan or Calibrate, and performs Wordscapes letter swipes when you tap Run. You can stop it any time. Does not handle advertisements.</string>
+</resources>

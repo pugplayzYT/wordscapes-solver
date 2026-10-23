@@ -1,0 +1,7 @@
+word_frequency.tsv ranks common English words using the 20k.txt
+frequency-ordered word list from the open-source google-10000-english project.
+Source: https://github.com/first20hours/google-10000-english
+
+Each record has the format: word<TAB>rank_score. Rank scores are derived
+from source order, with common words given higher values.
+It is used only to prioritize word guesses offline. No phone usage data is logged.
