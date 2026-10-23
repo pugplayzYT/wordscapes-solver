@@ -429,8 +429,10 @@ class WordscapesService : AccessibilityService() {
                             pendingPoints = result.points
                             pendingCalibration = cal
                             pendingWheel = result
-                            message(if(reading.recoveredSlots>0)
-                                "Found ${result.inferredCount-reading.recoveredSlots} + ${reading.recoveredSlots} possible missing letter…"
+                            message(if(reading.recoveredSlots==result.inferredCount)
+                                "Ring fallback: checking ${result.inferredCount} positions…"
+                                else if(reading.recoveredSlots>0)
+                                "Checking ${result.inferredCount-reading.recoveredSlots} visible + ${reading.recoveredSlots} estimated…"
                                 else "Reading ${result.inferredCount} letters…")
                             ocr.recognize(this, bitmap, result.points, result.radius,
                                 reading.hints) { letters ->
