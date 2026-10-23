@@ -17,10 +17,11 @@ import kotlin.math.*
  */
 class WheelVision {
     data class Reading(val wheel: WheelResult, val hints: List<Char?>,
-        val identified: Int, val visible: Int)
+        val identified: Int, val visible: Int, val recoveredSlots: Int)
     private data class Evidence(val at: Spot, val letter: Char?, val weight: Float)
-    private data class Match(val points: List<Evidence>, val n: Int,
-        val origin: Spot, val radius: Float, val score: Float, val coverage: Float)
+    private data class Match(val slots: List<Evidence?>, val n: Int,
+        val origin: Spot, val radius: Float, val score: Float, val coverage: Float,
+        val missingAngle: Float?)
 
     private val model=TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
 
@@ -96,7 +97,7 @@ class WheelVision {
                 // isolate actual bright/dark letter-shaped connected regions.
                 Thread {
                     val candidates=components(image,area)
-                    val result=fit(area,raw+second,candidates,requestedCount)
+                    val result=fit(image,area,raw+second,candidates,requestedCount)
                     callback(result)
                 }.start()
             }
@@ -168,7 +169,7 @@ class WheelVision {
         return result
     }
 
-    private fun fit(area:Calibration,raw:List<Evidence>,other:List<Evidence>,
+    private fun fit(image: Bitmap, area:Calibration,raw:List<Evidence>,other:List<Evidence>,
                     requested:Int?):Reading? {
         val all=raw+other
         if(all.size<3)return null
@@ -214,7 +215,10 @@ class WheelVision {
                     for(phaseOffset in listOf(-2.5f,0f,2.5f)) {
                         val phase=angle+phaseOffset
                         val remaining=spots.toMutableList()
-                        val chosen=ArrayList<Evidence>(n)
+                        // Keep the exact angular slot index even if the OCR/
+                        // contour detector misses one glyph. Previously any
+                        // four-of-five wheel was rejected unconditionally.
+                        val slots=MutableList<Evidence?>(n){null}
                         var ocrHits=0;var error=0f
                         for(j in 0 until n) {
                             val theta=Math.toRadians((phase+j*step).toDouble())
@@ -227,47 +231,99 @@ class WheelVision {
                             if(target!=null) {
                                 val dist=hypot(target.at.x-x,target.at.y-y)
                                 if(dist<=distanceTolerance) {
-                                    chosen.add(target)
+                                    slots[j]=target
                                     if(target.letter!=null)ocrHits++
                                     error+=dist/distanceTolerance
                                     remaining.remove(target)
                                 }
                             }
                         }
-                        val hits=chosen.size
-                        if(hits<3||hits<n-1)continue
-                        // Whole-wheel OCR often recognizes NO isolated
-                        // characters; don't require its text boxes to find
-                        // a ring when contour geometry supplies all positions.
-                        // Reject accidentally fitting every second position of a denser ring.
+                        val hits=slots.count { it != null }
+                        val missing=n-hits
+                        if(hits<3 || missing>1 || (n<4 && missing>0))continue
+                        val missingAngle=slots.indexOfFirst { it==null }
+                            .takeIf{it>=0}?.let {phase+it*step}
+                        // A missing center is considered only where the
+                        // *screenshot* contains real contrasting glyph ink.
+                        // It must also be read by the individual OCR stage.
+                        if(missingAngle!=null) {
+                            val theta=Math.toRadians(missingAngle.toDouble())
+                            val proposed=Spot(origin.x+cos(theta).toFloat()*radius,
+                                origin.y+sin(theta).toFloat()*radius)
+                            if(!hasVisibleGlyph(image,proposed,radius)) continue
+                        }
+                        // Prioritise the number of real observed characters.
+                        // A four-of-five match beats an accidental three-of-
+                        // three pattern, but a clean complete fit is preferred.
                         val inBand=spots.count{
                             abs(hypot(it.at.x-origin.x,it.at.y-origin.y)-radius)<
                                 distanceTolerance
                         }
                         val coverage=hits.toFloat()/n
-                        val score=coverage*4.4f +ocrHits.toFloat()/n*1.8f -
-                            error/n*.8f -(n-hits)*.2f -
-                            max(0,inBand-hits)*.20f
+                        val score=hits*1.45f + coverage*.85f +
+                            ocrHits*.29f - error*.50f -
+                            missing*.45f - max(0,inBand-hits)*.21f
                         if(score>(best?.score ?: Float.NEGATIVE_INFINITY)) {
-                            best=Match(chosen,n,origin,radius,score,coverage)
+                            best=Match(slots,n,origin,radius,score,coverage,missingAngle)
                         }
                     }
                 }
             }
         }
         val hit=best ?:return null
-        val available=hit.points
-        // We do NOT invent coordinates for missing letters. An incomplete set
-        // goes to review/rescan, rather than swiping arbitrary screen locations.
-        if(available.size!=hit.n)return null
-        val ordered=available.sortedBy{
+        val recovered=hit.slots.count { it==null }
+        val points=hit.slots.mapIndexed { j, actual ->
+            actual ?: run {
+                val angle=Math.toRadians(
+                    (hit.missingAngle ?: (j*360f/hit.n)).toDouble())
+                Evidence(Spot(hit.origin.x+cos(angle).toFloat()*hit.radius,
+                    hit.origin.y+sin(angle).toFloat()*hit.radius),null,0f)
+            }
+        }
+        // The estimated missing point is a candidate for *independent*
+        // per-letter OCR, not a claimed visual recognition.
+        val ordered=points.sortedBy {
             (atan2(it.at.y-hit.origin.y,it.at.x-hit.origin.x)+2*PI+PI/2)%(2*PI)
         }
         val anchors=ordered.count{it.letter!=null}
-        val shapeAgreement=(hit.score/5f).coerceIn(0f,1f)
-        val confidence=(.50f*hit.coverage+.40f*shapeAgreement+
-            .10f*anchors/hit.n.toFloat()).coerceIn(0f,1f)
+        val shapeAgreement=(hit.score/(hit.n*1.9f)).coerceIn(0f,1f)
+        val confidence=(.43f*hit.coverage+.42f*shapeAgreement+
+            .15f*anchors/hit.n.toFloat()-recovered*.16f).coerceIn(0f,1f)
         return Reading(WheelResult(ordered.map{it.at},confidence,hit.n,
-            hit.origin,hit.radius),ordered.map{it.letter},anchors,spots.size)
+            hit.origin,hit.radius),ordered.map{it.letter},anchors,spots.size,recovered)
+    }
+
+    /** Does the missing predicted slot contain a contrasting letter-shaped mark? */
+    private fun hasVisibleGlyph(image:Bitmap,at:Spot,ringRadius:Float):Boolean {
+        val half=(ringRadius*.23f).roundToInt().coerceAtLeast(13)
+        val x0=(at.x-half).roundToInt().coerceIn(0,image.width-1)
+        val y0=(at.y-half).roundToInt().coerceIn(0,image.height-1)
+        val x1=(at.x+half).roundToInt().coerceIn(x0+1,image.width)
+        val y1=(at.y+half).roundToInt().coerceIn(y0+1,image.height)
+        if(x1-x0<16||y1-y0<16)return false
+        fun luminance(x:Int,y:Int):Int {
+            val p=image.getPixel(x,y)
+            return (Color.red(p)*299+Color.green(p)*587+Color.blue(p)*114)/1000
+        }
+        val border=mutableListOf<Int>()
+        for(x in x0 until x1 step 3) {
+            border.add(luminance(x,y0))
+            border.add(luminance(x,y1-1))
+        }
+        for(y in y0 until y1 step 3) {
+            border.add(luminance(x0,y))
+            border.add(luminance(x1-1,y))
+        }
+        border.sort()
+        val background=border[border.size/2]
+        var total=0;var distinct=0
+        val inset=max(2,(half*.25f).roundToInt())
+        for(y in (y0+inset) until (y1-inset) step 2)
+            for(x in (x0+inset) until (x1-inset) step 2) {
+                total++
+                if(abs(luminance(x,y)-background)>48)distinct++
+            }
+        val share=if(total>0)distinct.toFloat()/total else 0f
+        return share in .035f.. .78f
     }
 }
