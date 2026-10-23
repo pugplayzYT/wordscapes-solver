@@ -32,6 +32,7 @@ class WordscapesService : AccessibilityService() {
     private var lastUiAction: SceneReader.Action? = null
     private var stableUiFrames = 0
     private lateinit var topBar: LinearLayout
+    private lateinit var autoControl: Button
     private val overlayStore get() = getSharedPreferences("wordscapes.overlay", android.content.Context.MODE_PRIVATE)
     private lateinit var status: TextView
     private var reviewPanel: LinearLayout? = null
@@ -89,33 +90,102 @@ class WordscapesService : AccessibilityService() {
                 softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
             }
 
+    /**
+     * Two-row responsive toolbar. Native Buttons have large intrinsic insets:
+     * never put five Buttons and the long solver status on the same row.
+     *
+     * Row 1: equal-width primary actions.
+     * Row 2: separate CAL / HIDE actions and an independently sized status.
+     */
     private fun buildBar() {
         if (::topBar.isInitialized && topBar.isAttachedToWindow) return
+        val background = android.graphics.Color.rgb(17, 40, 71)
+        val blue = android.graphics.Color.rgb(40, 112, 185)
+        val danger = android.graphics.Color.rgb(161, 47, 58)
+        val neutral = android.graphics.Color.rgb(67, 86, 108)
+
         topBar = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(5), dp(5), dp(5), dp(5))
+            setBackgroundColor(android.graphics.Color.argb(246, 17, 40, 71))
+        }
+
+        fun toolbarButton(label: String, color: Int, height: Int, action: () -> Unit): Button =
+            Button(this).apply {
+                text = label
+                textSize = 13f
+                isAllCaps = false
+                minWidth = 0
+                minimumWidth = 0
+                minHeight = 0
+                minimumHeight = 0
+                setSingleLine(true)
+                setPadding(dp(4), 0, dp(4), 0)
+                backgroundTintList = android.content.res.ColorStateList.valueOf(color)
+                setTextColor(android.graphics.Color.WHITE)
+                setOnClickListener { action() }
+                layoutParams = LinearLayout.LayoutParams(0, dp(height), 1f).apply {
+                    setMargins(dp(2), 0, dp(2), 0)
+                }
+            }
+
+        val mainRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(7), dp(5), dp(7), dp(5))
-            setBackgroundColor(android.graphics.Color.argb(238, 17, 40, 71))
         }
-        fun button(label: String, click: () -> Unit) = Button(this).apply {
-            text = label; textSize = 10f; minWidth = 0
-            setPadding(dp(2), 0, dp(2), 0)
-            setOnClickListener { click() }
+        autoControl = toolbarButton("AUTO", blue, 44) {
+            if (autoPilot) stopAutomation("AUTO stopped")
+            else startAutomation()
         }
-        topBar.addView(button("CAL") { calibrate() })
-        topBar.addView(button("AUTO") { if (autoPilot) stopAutomation("AUTO stopped") else startAutomation() })
-        topBar.addView(button("SCAN") { scan() })
-        topBar.addView(button("STOP") { stopAutomation("Stopped by user") })
-        topBar.addView(button("HIDE") { hideControls() })
+        mainRow.addView(autoControl)
+        mainRow.addView(toolbarButton("SCAN", blue, 44) { scan() })
+        mainRow.addView(toolbarButton("STOP", danger, 44) {
+            stopAutomation("Stopped by user")
+        })
+        topBar.addView(mainRow, LinearLayout.LayoutParams(-1, dp(44)))
+
+        val utilityRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(3), 0, 0)
+        }
+        val cal = toolbarButton("CAL", neutral, 38) { calibrate() }
+        val hide = toolbarButton("HIDE", neutral, 38) { hideControls() }
+        // Fixed, comfortable widths for the two utility buttons; the status
+        // takes the rest. All controls fit on narrow phone screens.
+        utilityRow.addView(cal, LinearLayout.LayoutParams(dp(70), dp(38)).apply {
+            setMargins(dp(2), 0, dp(2), 0)
+        })
+        utilityRow.addView(hide, LinearLayout.LayoutParams(dp(74), dp(38)).apply {
+            setMargins(dp(2), 0, dp(2), 0)
+        })
         status = TextView(this).apply {
             text = "Ready"
             setTextColor(android.graphics.Color.WHITE)
-            textSize = 11f
+            textSize = 12f
             maxLines = 2
-            setPadding(dp(6), 0, 0, 0)
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(7), 0, dp(3), 0)
+            contentDescription = "Solver status: Ready"
         }
-        topBar.addView(status, LinearLayout.LayoutParams(dp(74), -2))
-        wm.addView(topBar, overlayParams(-2, dp(54), false, dp(30)))
+        utilityRow.addView(status, LinearLayout.LayoutParams(0, dp(38), 1f))
+        topBar.addView(utilityRow, LinearLayout.LayoutParams(-1, dp(41)))
+
+        val screenWidth = resources.displayMetrics.widthPixels
+        val barWidth = min(screenWidth - dp(16), dp(560)).coerceAtLeast(dp(210))
+        wm.addView(topBar, overlayParams(barWidth, -2, false, dp(16)))
+        updateAutoControl()
+    }
+
+    private fun updateAutoControl() {
+        if (!::autoControl.isInitialized) return
+        autoControl.text = if (autoPilot) "AUTO ON" else "AUTO"
+        autoControl.backgroundTintList = android.content.res.ColorStateList.valueOf(
+            if (autoPilot) android.graphics.Color.rgb(23, 142, 106)
+            else android.graphics.Color.rgb(40, 112, 185)
+        )
     }
 
     /** HIDE removes ALL floating views, cancels the solve queue, and stays hidden until SHOW in the app. */
@@ -141,7 +211,10 @@ class WordscapesService : AccessibilityService() {
     }
 
     private fun message(text: String) {
-        if (::status.isInitialized) status.text = text
+        if (::status.isInitialized) {
+            status.text = text
+            status.contentDescription = "Solver status: $text"
+        }
     }
 
     private fun keepAwake(enabled: Boolean) {
@@ -161,6 +234,7 @@ class WordscapesService : AccessibilityService() {
         lastUiAction = null
         stableUiFrames = 0
         keepAwake(false)
+        updateAutoControl()
         stop(reason)
     }
 
@@ -177,6 +251,7 @@ class WordscapesService : AccessibilityService() {
         stableUiFrames = 0
         lastUiAction = null
         keepAwake(true)
+        updateAutoControl()
         inspectScene(true)
     }
 
@@ -444,7 +519,7 @@ class WordscapesService : AccessibilityService() {
         row.addView(Button(this).apply { text = "CLOSE"; setOnClickListener { removeReview() } }, LinearLayout.LayoutParams(0, dp(52), 1f))
         panel.addView(row)
         reviewPanel = panel
-        wm.addView(panel, overlayParams((resources.displayMetrics.widthPixels * .94f).toInt(), -2, true, dp(95)))
+        wm.addView(panel, overlayParams((resources.displayMetrics.widthPixels * .94f).toInt(), -2, true, dp(135)))
     }
 
     private fun removeReview() {
