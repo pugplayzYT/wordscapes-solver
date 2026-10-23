@@ -49,6 +49,23 @@
 - `DatamuseClient.kt` – best-effort Datamuse vocabulary supplements in a background thread
 - `app/src/main/assets/word_frequency.tsv` – offline frequency ranking (see `WORD_FREQUENCY_ATTRIBUTION.txt`)
 
+## Download a compiled APK from GitHub Actions
+
+The repository builds a **debug APK** automatically on pushes to `main`. To build
+on demand, open [Actions → Build Android APK](https://github.com/pugplayzYT/wordscapes-solver/actions/workflows/build-apk.yml),
+choose **Run workflow**, select `main`, and start the build.
+
+When the workflow completes successfully, open its run page and download the
+**WordscapesAuto-debug-apk** artifact under **Artifacts**. GitHub downloads it as
+a ZIP. Extract `app-debug.apk` from the ZIP and install that APK on your
+Android phone (allow installations from that source if prompted). The artifact
+expires after 30 days; simply run the workflow again to get a fresh APK.
+
+This is a development/debug-signed app, **not** a Google Play release build.
+It can be installed for testing, but the source has not yet been validated on a
+physical Android device. If the build fails, open the failed step in the Actions
+run to inspect the compiler log.
+
 ## Gradle
 
 `gradle/wrapper/gradle-wrapper.properties` is supplied. The GitHub repository includes the official Gradle 8.11.1 wrapper JAR and launchers. Open the repository root in Android Studio, or use `gradlew.bat assembleDebug` on Windows (with Android SDK and JDK 17 configured).
