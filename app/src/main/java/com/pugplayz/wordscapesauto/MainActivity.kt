@@ -165,8 +165,8 @@ class MainActivity : Activity() {
             text = "CONTROLS IN WORDSCAPES:\n\n" +
                 "AUTO — Gemma reads menu, wheel, victory and ad close/skip " +
                 "buttons; the phone performs gestures.\n\n" +
-                "SCAN — One Gemma scan of an open puzzle and review.\\n\\n" +
-                "DARK — Cover the display in black while AUTO keeps running.\\n\\n" +
+                "SCAN — One Gemma scan of an open puzzle and review.\n\n" +
+                "DARK — Cover the display in black while AUTO keeps running.\n\n" +
                 "CAL — Optional wheel crop area; mainly for classic OCR.\n\n" +
                 "STOP — Immediately cancel the current run.\n\n" +
                 "HIDE — Stop and remove controls.\n\n" +
