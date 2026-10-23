@@ -1,3 +1,43 @@
+# v2.11 — Fast Wordscapes level completion (common answers first)
+
+The previous dictionary solver sorted EVERY full-length anagram ahead
+of shorter answers, irrespective of frequency or legitimacy. Its
+fallback queue then extended to up to 850 entries from a dictionary of
+84,000+ words that contains obscure proper names, acronyms and
+uncommon spellings. This is terrible for speed if the aim is to clear
+the grid rather than collect bonus words.
+
+v2.11 introduces three **bounded, frequency-ranked** stages per puzzle:
+1. **FAST:** up to 45 everyday words (favour long grid answers first)
+2. **PLAUSIBLE:** up to 65 additional less-common words, only if the
+   level has not completed
+3. **LAST RESORT:** up to 35 additional dictionary words with at least
+   modest lexical frequency, and a short curated list of everyday
+   answers the scraped frequency table missed
+
+The solver will never attempt the raw 850-word rare-anagram queue in
+automatic mode. It excludes known search-heavy abbreviations and
+proper names, and avoids words with no dictionary frequency unless
+they appear in its curated list of genuinely normal words.
+
+Full-length words now have a **moderate scoring advantage**, not
+unconditional highest priority. For example, a common four-letter
+answer can outrank a completely unrecognizable six-letter string.
+
+AUTO still checks for a level transition after each submitted word,
+so stage 2 and 3 are skipped entirely on fast victories. The app
+uses the existing offline dictionary and respects user CAL; no AI
+anagram generation or new network source was added.
+
+Caveat: from wheel letters alone, the app cannot identify with certainty
+which dictionary word is on the grid and which is a bonus word.
+Frequency ranking is a pragmatic speed optimization, not a perfect
+board-slot solver. If a rare required word is absent from the shortlist,
+AUTO pauses for review rather than brute-force hundreds of junk words.
+Royal Match and the five-STOP-tap AI DEBUG viewer are unchanged.
+
+---
+
 # v2.10 — Hidden AI DEBUG viewer (five STOP taps)
 
 To reveal DEBUG, press the floating **STOP** button five times within

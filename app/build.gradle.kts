@@ -11,8 +11,8 @@ android {
         applicationId = "com.pugplayz.wordscapesauto"
         minSdk = 30
         targetSdk = 35
-        versionCode = 21
-        versionName = "2.10"
+        versionCode = 22
+        versionName = "2.11"
     }
 
     compileOptions {
