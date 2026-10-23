@@ -92,37 +92,101 @@ class GemmaClient(private val context: Context) {
         } finally {if(scaled!==image) scaled.recycle()}
     }
 
+    /**
+     * Gemma 4 supports a separate thinking channel. Ollama may return HTTP
+     * 200 with message.content="" when thinking consumes num_predict.
+     * Explicitly disable thinking for the short machine-readable answers.
+     *
+     * Do not feed an empty string to JSONObject: report the Ollama metadata
+     * and retry ONE time with a larger generation budget.
+     */
     private fun ask(image:Bitmap,question:String,maxSide:Int):JSONObject {
         val (server,model)=settings()
-        val request=JSONObject()
-            .put("model",model)
-            .put("stream",false)
-            .put("keep_alive","30m")
-            .put("format","json")
-            .put("options",JSONObject().put("temperature",0).put("num_predict",700))
-            .put("messages",JSONArray().put(JSONObject()
-                .put("role","user")
-                .put("content",question)
-                .put("images",JSONArray().put(encode(image,maxSide)))))
-        val conn=URL("$server/api/chat").openConnection() as HttpURLConnection
-        conn.requestMethod="POST"
-        conn.setRequestProperty("Content-Type","application/json")
-        conn.connectTimeout=9000
-        // Gemma 12B on a GTX 1080 may partially use system RAM.
-        conn.readTimeout=180000
-        conn.doOutput=true
-        try {
-            conn.outputStream.use{it.write(request.toString().toByteArray(Charsets.UTF_8))}
-            val status=conn.responseCode
-            val body=(if(status in 200..299) conn.inputStream else conn.errorStream)
-                ?.bufferedReader()?.use{it.readText()} ?: ""
-            if(status !in 200..299)error("Ollama HTTP $status: ${body.take(180)}")
-            val outer=JSONObject(body)
-            val content=outer.optJSONObject("message")?.optString("content","") ?: ""
-            val clean=content.trim().removePrefix("```json").removePrefix("```")
-                .removeSuffix("```").trim()
-            return JSONObject(clean)
-        } finally {conn.disconnect()}
+        val encoded=encode(image,maxSide)
+        var reason="Gemma did not return usable JSON"
+        for(attempt in 0..1) {
+            val request=JSONObject()
+                .put("model",model)
+                .put("stream",false)
+                .put("think",false)
+                .put("keep_alive","30m")
+                .put("format","json")
+                .put("options",JSONObject()
+                    .put("temperature",0)
+                    .put("num_predict",if(attempt==0)1100 else 1800))
+                .put("messages",JSONArray().put(JSONObject()
+                    .put("role","user")
+                    .put("content",if(attempt==0)question else
+                        question+"\\nIMPORTANT: Reply with exactly one valid JSON object. " +
+                        "No reasoning, no explanation, no Markdown.")
+                    .put("images",JSONArray().put(encoded))))
+            val conn=URL("$server/api/chat").openConnection() as HttpURLConnection
+            conn.requestMethod="POST"
+            conn.setRequestProperty("Content-Type","application/json")
+            conn.connectTimeout=9000
+            // Running a 12B model partly on CPU can be very slow.
+            conn.readTimeout=180000
+            conn.doOutput=true
+            try {
+                conn.outputStream.use {
+                    it.write(request.toString().toByteArray(Charsets.UTF_8))
+                }
+                val status=conn.responseCode
+                val body=(if(status in 200..299)conn.inputStream else conn.errorStream)
+                    ?.bufferedReader()?.use{it.readText()} ?: ""
+                if(status !in 200..299)
+                    error("Ollama HTTP $status: ${body.take(200)}")
+                if(body.isBlank()) {
+                    reason="Ollama returned an empty HTTP response"
+                    android.util.Log.w("WordscapesAuto",reason)
+                    continue
+                }
+                val outer=try {JSONObject(body)}catch(e:org.json.JSONException) {
+                    error("Ollama HTTP response is not JSON: ${e.message}")
+                }
+                val reply=outer.optJSONObject("message")
+                val raw=reply?.optString("content","") ?: ""
+                val doneReason=outer.optString("done_reason","unknown")
+                val evalCount=outer.optInt("eval_count",-1)
+                val thinkingChars=reply?.optString("thinking","")?.length ?: 0
+                if(raw.isBlank()) {
+                    reason="Ollama returned empty model content " +
+                        "(done=$doneReason, tokens=$evalCount, thinking=$thinkingChars)"
+                    android.util.Log.w("WordscapesAuto",reason)
+                    continue
+                }
+                val trimmed=raw.trim()
+                val noFence=trimmed.removePrefix("```json").removePrefix("```")
+                    .removeSuffix("```").trim()
+                // Some model versions surround the answer with commentary.
+                // Only accept a single JSON object; never treat prose as a
+                // successful letter recognition.
+                val candidate=if(noFence.startsWith("{") && noFence.endsWith("}"))
+                    noFence
+                else {
+                    val start=noFence.indexOf('{')
+                    val end=noFence.lastIndexOf('}')
+                    if(start>=0 && end>start) noFence.substring(start,end+1)
+                    else ""
+                }
+                if(candidate.isEmpty()) {
+                    reason="Gemma returned text instead of a JSON object " +
+                        "(done=$doneReason, tokens=$evalCount)"
+                    android.util.Log.w("WordscapesAuto",reason)
+                    continue
+                }
+                try {
+                    return JSONObject(candidate)
+                } catch(e:org.json.JSONException) {
+                    reason="Gemma returned invalid JSON: ${e.message?.take(90)} " +
+                        "(done=$doneReason, tokens=$evalCount)"
+                    android.util.Log.w("WordscapesAuto",reason)
+                }
+            } finally {
+                conn.disconnect()
+            }
+        }
+        error("$reason after 2 attempts")
     }
 
     private fun pct(x:Double,max:Int):Float=(x/1000.0*max).toFloat()
