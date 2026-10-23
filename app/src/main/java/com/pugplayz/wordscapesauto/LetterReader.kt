@@ -34,6 +34,7 @@ class LetterReader {
         bitmap: Bitmap,
         positions: List<Spot>,
         radius: Float,
+        hints: List<Char?> = emptyList(),
         finished: (LetterScan) -> Unit
     ) {
         val letters = StringBuilder()
@@ -45,8 +46,16 @@ class LetterReader {
                 return
             }
             recognizeOne(context, bitmap, positions[i], radius, samples[i]) { prediction ->
-                letters.append(prediction.char)
-                if (!prediction.confident) uncertain.add(i)
+                val hint = hints.getOrNull(i)?.takeIf { it in 'A'..'Z' }
+                val chosen = if (prediction.char == '?' && hint != null)
+                    hint else prediction.char
+                // OCR on the entire wheel is independent evidence of the
+                // per-letter crops; disagreement MUST prevent automatic RUN.
+                val confident = if (hint != null)
+                    prediction.confident && prediction.char == hint
+                    else prediction.confident
+                letters.append(chosen)
+                if (!confident) uncertain.add(i)
                 next(i + 1)
             }
         }
