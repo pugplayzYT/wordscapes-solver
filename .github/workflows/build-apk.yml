@@ -43,6 +43,14 @@ jobs:
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Bundle trained single-character OCR model
+        run: |
+          mkdir -p app/src/main/assets/tessdata
+          curl -fL --retry 3 --connect-timeout 15 --max-time 180 \
+            https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/eng.traineddata \
+            -o app/src/main/assets/tessdata/eng.traineddata
+          test $(wc -c < app/src/main/assets/tessdata/eng.traineddata) -gt 1000000
+
       - name: Build debug APK
         run: bash ./gradlew :app:assembleDebug --no-daemon --stacktrace
 

@@ -11,8 +11,8 @@ android {
         applicationId = "com.pugplayz.wordscapesauto"
         minSdk = 30
         targetSdk = 35
-        versionCode = 6
-        versionName = "1.5"
+        versionCode = 7
+        versionName = "1.6"
     }
 
     compileOptions {
@@ -25,4 +25,5 @@ android {
 dependencies {
     // Bundled on-device Latin OCR: no API key, no model download during first scan.
     implementation("com.google.mlkit:text-recognition:16.0.1")
+    implementation("cz.adaptech.tesseract4android:tesseract4android:4.9.0")
 }
