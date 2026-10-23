@@ -1,46 +1,62 @@
 package com.pugplayz.wordscapesauto
 
 import android.content.Context
-import kotlin.math.min
+import android.graphics.RectF
+import kotlin.math.*
 
-/** Only the ring geometry is saved; letter count is recalculated every puzzle. */
-data class Calibration(val center: Spot, val radius: Float)
+/** The only saved calibration is a rectangle containing every possible wheel letter. */
+data class Calibration(val bounds: RectF) {
+    val center: Spot get() = Spot(bounds.centerX(), bounds.centerY())
+    val radius: Float get() = min(bounds.width(), bounds.height()) * .40f
+}
 
 object Settings {
     private const val PREF = "wordscapes.settings"
 
     fun save(ctx: Context, cal: Calibration, imageWidth: Int, imageHeight: Int) {
-        val minDim = min(imageWidth, imageHeight).coerceAtLeast(1).toFloat()
+        val w = imageWidth.coerceAtLeast(1).toFloat()
+        val h = imageHeight.coerceAtLeast(1).toFloat()
         ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit()
-            .putFloat("center_x_ratio", cal.center.x / imageWidth.coerceAtLeast(1))
-            .putFloat("center_y_ratio", cal.center.y / imageHeight.coerceAtLeast(1))
-            .putFloat("radius_ratio", cal.radius / minDim)
-            .putFloat("cx", cal.center.x).putFloat("cy", cal.center.y)
-            .putFloat("radius", cal.radius)
+            .putBoolean("box_calibrated", true)
+            .putFloat("box_l", cal.bounds.left / w)
+            .putFloat("box_t", cal.bounds.top / h)
+            .putFloat("box_r", cal.bounds.right / w)
+            .putFloat("box_b", cal.bounds.bottom / h)
             .remove("n")
             .apply()
     }
 
-    fun hasCalibration(ctx: Context): Boolean =
-        ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).contains("cx")
+    fun hasCalibration(ctx: Context): Boolean {
+        val p = ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+        // Older v1.3 center + radius settings migrate automatically.
+        return p.getBoolean("box_calibrated", false) ||
+            p.contains("center_x_ratio") || p.contains("cx")
+    }
 
     fun load(ctx: Context, imageWidth: Int, imageHeight: Int): Calibration? {
         val p = ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE)
-        if (!p.contains("cx") && !p.contains("center_x_ratio")) return null
-        val minDim = min(imageWidth, imageHeight).coerceAtLeast(1).toFloat()
-        val cal = if (p.contains("center_x_ratio") && p.contains("center_y_ratio") && p.contains("radius_ratio")) {
-            Calibration(
-                Spot(p.getFloat("center_x_ratio", .5f) * imageWidth,
-                     p.getFloat("center_y_ratio", .7f) * imageHeight),
-                p.getFloat("radius_ratio", .2f) * minDim
-            )
-        } else {
-            // Upgrade-safe fallback for existing installations.
-            Calibration(Spot(p.getFloat("cx", 0f), p.getFloat("cy", 0f)), p.getFloat("radius", 160f))
-        }
-        return cal.takeIf {
-            it.radius >= 35f && it.center.x in 0f..imageWidth.toFloat() &&
-                it.center.y in 0f..imageHeight.toFloat()
-        }
+        val w = imageWidth.toFloat(); val h = imageHeight.toFloat()
+        if (w <= 0f || h <= 0f) return null
+        val box = if (p.getBoolean("box_calibrated", false)) {
+            RectF(p.getFloat("box_l", 0f) * w, p.getFloat("box_t", 0f) * h,
+                p.getFloat("box_r", 1f) * w, p.getFloat("box_b", 1f) * h)
+        } else if (p.contains("center_x_ratio")) {
+            val cx = p.getFloat("center_x_ratio", .5f) * w
+            val cy = p.getFloat("center_y_ratio", .7f) * h
+            val r = p.getFloat("radius_ratio", .2f) * min(w,h)
+            // Migration estimate only. User can replace it with a box using CAL.
+            RectF(cx - r * 1.35f, cy - r * 1.35f,
+                  cx + r * 1.35f, cy + r * 1.35f)
+        } else if (p.contains("cx")) {
+            val cx = p.getFloat("cx", .5f*w)
+            val cy = p.getFloat("cy", .7f*h)
+            val r = p.getFloat("radius", 150f)
+            RectF(cx-r*1.35f,cy-r*1.35f,cx+r*1.35f,cy+r*1.35f)
+        } else return null
+
+        val safe = RectF(
+            box.left.coerceIn(0f,w), box.top.coerceIn(0f,h),
+            box.right.coerceIn(0f,w), box.bottom.coerceIn(0f,h))
+        return if (safe.width() >= 90f && safe.height() >= 90f) Calibration(safe) else null
     }
 }
