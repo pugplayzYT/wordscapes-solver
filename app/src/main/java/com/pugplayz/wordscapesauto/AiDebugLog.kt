@@ -146,7 +146,8 @@ object AiDebugLog {
     }
 
     /** Displays the exact JPEG image that was base64-encoded in the POST. */
-    fun screenshot(ctx:Context,entry:Entry):Bitmap? = try {
+    fun screenshot(ctx:Context,entry:Entry):Bitmap? {
+        return try {
         val json=JSONObject(request(ctx,entry))
         val messages=json.optJSONArray("messages") ?:return null
         val last=messages.optJSONObject(messages.length()-1) ?:return null
@@ -159,6 +160,7 @@ object AiDebugLog {
         Log.w("WordscapesAuto","Could not open AI debug screenshot",e)
         null
     }catch(_:OutOfMemoryError){null}
+    }
 
     /** Text-only overview deliberately does not duplicate giant image base64. */
     fun readable(ctx:Context,entry:Entry):String {
