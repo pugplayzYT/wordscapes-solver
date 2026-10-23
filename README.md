@@ -1,3 +1,63 @@
+## Wordscapes Auto 2.5 — no-flash dark capture + AI-only answers
+
+### DARK curtain: no repeating flashes
+
+Android 14 (API 34) introduced
+[`AccessibilityService.takeScreenshotOfWindow`](https://developer.android.com/reference/android/accessibilityservice/AccessibilityService#takeScreenshotOfWindow(int,%20java.util.concurrent.Executor,%20android.accessibilityservice.AccessibilityService.TakeScreenshotCallback)).
+That API **captures a specific app window even underneath an
+accessibility overlay**. Unlike previous releases, v2.5 does **not
+briefly uncover the game** while taking each screenshot. The curtain
+remains fully visible (black) while the screenshot comes directly
+from Wordscapes' underlying window.
+
+This is not physical display-off. The panel stays logically awake to
+receive gestures, and the dark WAKE tab remains visible. The app
+enables `canRetrieveWindowContent` and
+`flagRetrieveInteractiveWindows` to identify the actual foreground
+application window, excluding its own accessibility overlays.
+A window-only image is mapped into full-screen device coordinates so
+Gemma's detected touch locations remain aligned with Android swipes.
+
+When DARK mode cannot obtain the game window on a particular ROM,
+AUTO **pauses with an explicit error**; it will NOT resume the older
+hide-curtain / flash / capture loop. Android 14+ is required for
+no-flash DARK; the regular non-dark mode supports older Android
+versions. Users who already enabled the accessibility service may
+need to disable and re-enable the service after updating because its
+window-information capability metadata has changed.
+
+### Common-first, fully Gemma-generated words
+
+When Gemma mode is enabled, `WordEngine.solve()` and Datamuse are
+**not used at all** for the word list. The bot:
+1. Uses Gemma vision to read each actual wheel letter and its touch
+   coordinates, and validates them with a second independent read.
+2. Sends the **full puzzle screenshot** and the confirmed wheel letters
+   to Gemma for likely answers, asking it to inspect the crossword
+   blanks and predict their lengths.
+3. Gets at most **32 likely, common English words in priority order**.
+   The words stay in Gemma's own common-first ranking; never sort them
+   alphabetically or send a 170-word brute-force dictionary queue.
+4. Uses only a lightweight local validator to make sure every suggested
+   word has >=3 letters and uses only available wheel tiles in the
+   correct multiplicity. **No two-letter words are attempted.**
+5. Swipes words with the original Android Accessibility gesture engine,
+   checking whether the puzzle is complete.
+
+This can be more selective than dictionary enumeration, but model
+predictions are not always correct, and Wordscapes may reject
+AI-proposed words. The optional classic on-device OCR solver still
+uses the bundled offline dictionary when Gemma is disabled.
+
+**Verify on an actual S24+**: CI compilation confirms Android source
+validity, but screen-coordinate mapping and window availability depend
+on device/OS. If the curtain pauses with `DARK cannot capture game`,
+disable and re-enable Wordscapes Auto's accessibility service and try
+again. No-flash mode is a functional change, not a guarantee of
+platform compatibility.
+
+---
+
 ## v2.4 — missing full-length word no longer rejects puzzle
 
 When the model reliably identified the wheel, v2.3 still required
