@@ -1,3 +1,58 @@
+# v2.6 — Royal Match AI mode (new)
+
+This version adds a game selector under **SELECT GAME** in the Android
+launcher: **Wordscapes — word wheel** (original mode), or
+**Royal Match — AI match-3** (new mode). The selected mode is persisted.
+
+In Royal Match mode, tap AUTO from the **Level** screen. The phone sends
+screenshots to your configured Gemma 4 vision model on your Ollama PC.
+The agent recognizes the Level button, the **Play** button, an active
+match-3 board, victory screens, and free retry options. On each active
+board it asks Gemma for ONE action (a match-3 swipe between adjacent
+cells, or activation of a free ON-BOARD power-up), carries it out with
+Accessibility gestures, allows animations to settle, captures the new
+board, gives the prior-action observation to Gemma, and asks for the
+next move.
+
+The planner prioritizes level goals shown in the top-left of Royal
+Match, remaining moves in the top-right, 4+ piece matches, and
+power-ups (Rocket/TNT/Propeller/Light Ball). For **Marble** obstacles
+it prefers hitting Marble with an on-board power-up before clearing
+revealed Plaster with a match. For typical grid-based boards, it
+converts zero-based row/column pairs into actual tile center pixels
+to make adjacent swipes rather than arbitrary drags.
+
+Safety / reliability guardrails:
+- Never intentionally click a purchase, coin spend, paid booster,
+  additional paid moves, optional rewarded advert, or install offer.
+- If a page is unknown or no free next step is obvious, wait and
+  eventually pause. Free retries are limited.
+- Only horizontal/vertical adjacent board swaps are accepted when
+  tile indices can be recognized. Without a grid, only short
+  approximately straight horizontal/vertical drags are permitted.
+- Normal menu/Play/Continue taps are confirmed with a second
+  screenshot; one move is executed at a time on live boards.
+- The app compares before/after screenshot regions to detect
+  ineffective actions and avoids repeating moves endlessly.
+- STOP interrupts the agent and removes DARK curtain.
+- DARK's Android 14+ window capture can remain enabled for Royal Match.
+- Wordscapes's previous AI word-solving mode remains available when
+  you switch back in the app settings.
+
+**Important limitations:** This is a first build and there is no
+promise that Gemma can reliably beat difficult boards. Vision models
+can mistake tiles, grid coordinates, objectives, power-up types or
+interstitials. The last-move feedback is only a coarse image-change
+metric, not a complete simulation of gravity/cascades. Match-3 boards
+with irregular layouts or moving obstacles may require a dedicated
+board detector and forward-search solver. A successful Android build
+does not prove that any particular match or level can be completed.
+
+Official game: Royal Match by Dream Games
+(https://play.google.com/store/apps/details?id=com.dreamgames.royalmatch).
+
+---
+
 ## Wordscapes Auto 2.5 — no-flash dark capture + AI-only answers
 
 ### DARK curtain: no repeating flashes
