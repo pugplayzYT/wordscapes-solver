@@ -1,3 +1,39 @@
+## v2.2 — Gemma 4 empty-JSON fix
+
+An on-device message such as **`End of input at character 0`** means
+Android received an empty final answer from Ollama, *not* that it failed
+to read the printed letters. In v2.1 the app asked Gemma 4 for JSON but
+did not disable its thinking channel, and capped output at 700 tokens.
+In some Gemma 4 / Ollama versions the thinking channel consumes that
+budget, producing an HTTP 200 response with an **empty `message.content`**.
+
+This release now:
+- Adds `"think": false` to all `/api/chat` image requests so the model
+  generates the JSON action/letter answer directly.
+- Increases the output budget to 1,100 tokens for normal reads and
+  up to 1,800 tokens for the fallback attempt.
+- Handles blank `message.content`, empty HTTP bodies, and malformed
+  JSON **without throwing a misleading JSON parsing exception**;
+  makes one controlled retry and reports the actual cause.
+- Logs `done_reason`, generated token count, and thinking field length
+  (no screenshots or image content) under Android logcat tag
+  `WordscapesAuto` to aid diagnosis.
+
+**Gemma mode does not require CAL.** The AI normally locates its own
+wheel crop; CAL can be used as a fallback if the model does not return
+a wheel area. An empty JSON response is independent of CAL.
+
+To capture diagnostics while running the puzzle:
+
+```cmd
+"%LOCALAPPDATA%\\Android\\Sdk\\platform-tools\\adb.exe" logcat -s WordscapesAuto:W
+```
+
+This is a protocol-handling fix and has not been proven against the
+user's Ollama installation or actual puzzle screens until field tested.
+
+---
+
 ## v2.1 — Level button tapping fix (October 2026)
 
 If Gemma correctly says `menu / level` but the bot never clicks Level, the failure was the **tapping verification**, not AI image classification. Older v2.0 discarded navigations when Gemma omitted x/y, reported a low self-confidence score (below 0.79), or its estimated location shifted between reads. The floating toolbar only showed `Gemma menu / level`.
