@@ -1,3 +1,42 @@
+## v2.3 — black screen curtain while AUTO keeps playing
+
+Android's normal Accessibility screenshots and gestures do **not**
+continue reliably when the physical display is put into its actual
+power-button OFF state. The new **Screen Curtain** is the supported
+workaround: it paints an opaque black, non-touchable accessibility overlay
+over the OLED display and requests minimum brightness, while keeping the
+display electronically awake.
+
+To use it:
+1. Open Wordscapes Auto; check **Black screen curtain during AUTO**.
+2. Open Wordscapes and press AUTO as usual.
+3. The display becomes almost entirely black. A tiny, dark **WAKE**
+   label at the top-right is the one area that can be tapped by a human.
+4. Tap WAKE to uncover the game **without stopping AUTO**.
+5. Alternatively start AUTO with the checkbox off, then tap the new
+   floating **DARK** button. STOP always removes the curtain.
+
+While blacked out, gestures pass through the full-screen curtain because
+it has `FLAG_NOT_TOUCHABLE`. Before every screenshot, the app briefly
+hides the curtain and the WAKE label, allows the compositor to update,
+captures the underlying Wordscapes image, then restores the curtain.
+**Brief visible flashes are expected** around screenshot capture; they
+cannot be eliminated by this simple overlay-based implementation.
+
+This is **not genuine panel power-off**, and the game/AI still run. On
+OLED screens the predominantly black image may reduce display power and
+burn-in risk versus leaving a bright puzzle on overnight, but savings
+are hardware- and brightness-dependent. Android status/navigation bars
+may remain visible depending on OS UI restrictions. Avoid physically
+pressing the power key to switch off the screen, which may interrupt
+screenshot/gesture operation.
+
+CI building confirms compilation, not the behavior of screenshot
+masking or touch pass-through on every manufacturer/Android version.
+Test a few puzzles in DARK mode first before an overnight run.
+
+---
+
 ## v2.2 — Gemma 4 empty-JSON fix
 
 An on-device message such as **`End of input at character 0`** means

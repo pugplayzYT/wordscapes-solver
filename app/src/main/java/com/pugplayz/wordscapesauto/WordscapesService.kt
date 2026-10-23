@@ -34,6 +34,14 @@ class WordscapesService : AccessibilityService() {
     private var gemmaActionFrames = 0
     private var gemmaLastDispatched = ""
     private var gemmaRepeatTaps = 0
+    // Display curtain: physically sleeping Android's display would interrupt
+    // screenshots/touches. This visual curtain stays non-touchable so the
+    // accessibility automation can still interact with the game underneath.
+    private val curtainPrefs get() =
+        getSharedPreferences("wordscapes.curtain", android.content.Context.MODE_PRIVATE)
+    private var curtainOn = false
+    private var curtainMask: View? = null
+    private var curtainWake: TextView? = null
     private var autoPilot = false
     private var autoRetries = 0
     private var autoUiRetries = 0
@@ -147,6 +155,9 @@ class WordscapesService : AccessibilityService() {
             else startAutomation()
         }
         mainRow.addView(autoControl)
+        mainRow.addView(toolbarButton("DARK", neutral, 44) {
+            setCurtainPreference(!curtainOn)
+        })
         mainRow.addView(toolbarButton("SCAN", blue, 44) { scan() })
         mainRow.addView(toolbarButton("STOP", danger, 44) {
             stopAutomation("Stopped by user")
@@ -235,7 +246,109 @@ class WordscapesService : AccessibilityService() {
         } catch (_: Exception) {}
     }
 
+    /**
+     * OLED-friendly curtain. This is NOT the Android power-button screen-off
+     * state: display capture and touch dispatch require the display awake.
+     *
+     * A black, NOT_TOUCHABLE accessibility overlay obscures the gameplay
+     * visually while letting synthetic gestures reach the actual game. The
+     * small WAKE affordance is separately touchable by the user.
+     */
+    fun setCurtainPreference(enabled:Boolean) {
+        curtainPrefs.edit().putBoolean("auto_dark",enabled).apply()
+        if(enabled && !autoPilot) {
+            message("Start AUTO first, then tap DARK")
+            return
+        }
+        setCurtain(enabled)
+        message(if(enabled) "Screen curtain on • top-right WAKE to reveal"
+                else "Screen visible • AUTO unchanged")
+    }
+
+    private fun setCurtain(enabled:Boolean) {
+        if(!enabled) {
+            curtainOn=false
+            val wake=curtainWake
+            curtainWake=null
+            if(wake!=null && wake.isAttachedToWindow)
+                try{wm.removeView(wake)}catch(_:Exception){}
+            val mask=curtainMask
+            curtainMask=null
+            if(mask!=null && mask.isAttachedToWindow)
+                try{wm.removeView(mask)}catch(_:Exception){}
+            return
+        }
+        if(!autoPilot || !::wm.isInitialized)return
+        if(curtainOn && curtainMask?.isAttachedToWindow==true)return
+        curtainOn=true
+        try {
+            val black=View(this).apply {
+                setBackgroundColor(android.graphics.Color.BLACK)
+                importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            }
+            val maskParams=WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                    WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
+                android.graphics.PixelFormat.OPAQUE
+            ).apply {
+                gravity=Gravity.TOP or Gravity.START
+                screenBrightness=0.0f
+                layoutInDisplayCutoutMode=
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+            curtainMask=black
+            wm.addView(black,maskParams)
+            // Only this compact top-right tab receives a human tap; the
+            // full-screen curtain lets every other gesture pass through.
+            val wake=TextView(this).apply {
+                text="WAKE"
+                textSize=11f
+                gravity=Gravity.CENTER
+                setTextColor(android.graphics.Color.rgb(100,100,100))
+                setBackgroundColor(android.graphics.Color.rgb(12,12,12))
+                contentDescription="Reveal game while keeping AUTO running"
+                setOnClickListener {
+                    setCurtainPreference(false)
+                    Toast.makeText(this@WordscapesService,
+                        "Screen revealed; AUTO continues",
+                        Toast.LENGTH_SHORT).show()
+                }
+            }
+            val wakeParams=WindowManager.LayoutParams(
+                dp(65),dp(38),
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
+                android.graphics.PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity=Gravity.TOP or Gravity.END
+                y=dp(34)
+                x=dp(12)
+                screenBrightness=0.0f
+            }
+            curtainWake=wake
+            wm.addView(wake,wakeParams)
+        } catch(e:Exception) {
+            curtainOn=false
+            curtainWake?.let { if(it.isAttachedToWindow)
+                try{wm.removeView(it)}catch(_:Exception){} }
+            curtainMask?.let { if(it.isAttachedToWindow)
+                try{wm.removeView(it)}catch(_:Exception){} }
+            curtainWake=null
+            curtainMask=null
+            message("Cannot darken display: ${e.message?.take(45)}")
+        }
+    }
+
     private fun stopAutomation(reason: String) {
+        setCurtain(false)
         autoPilot = false
         gemmaMode = false
         gemmaIdleCount = 0
@@ -267,6 +380,7 @@ class WordscapesService : AccessibilityService() {
             gemmaRepeatTaps = 0
             keepAwake(true)
             updateAutoControl()
+            if(curtainPrefs.getBoolean("auto_dark",false))setCurtain(true)
             gemmaInspect()
             return
         }
@@ -283,6 +397,7 @@ class WordscapesService : AccessibilityService() {
         lastUiAction = null
         keepAwake(true)
         updateAutoControl()
+        if(curtainPrefs.getBoolean("auto_dark",false))setCurtain(true)
         inspectScene(true)
     }
 
@@ -697,22 +812,64 @@ class WordscapesService : AccessibilityService() {
     }
 
     private fun capture(callback: (Bitmap?) -> Unit) {
-        // Android 11+: works without MediaProjection and without ADB.
-        takeScreenshot(android.view.Display.DEFAULT_DISPLAY, mainExecutor,
-            object : TakeScreenshotCallback {
-                override fun onSuccess(result: ScreenshotResult) {
-                    val buffer: HardwareBuffer = result.hardwareBuffer
-                    val wrapped = Bitmap.wrapHardwareBuffer(buffer, result.colorSpace)
-                    val copy = wrapped?.copy(Bitmap.Config.ARGB_8888, false)
-                    wrapped?.recycle()
-                    buffer.close()
-                    callback(copy)
-                }
-                override fun onFailure(errorCode: Int) {
-                    message("Screenshot error $errorCode — retry")
-                    callback(null)
-                }
-            })
+        // A fully black overlay might itself appear in takeScreenshot().
+        // Temporarily uncover the game, wait for SurfaceFlinger to present
+        // the underlying frame, capture, then restore the visual curtain.
+        // Brief screen flashes are a known limitation of this workaround.
+        val mask=curtainMask
+        val wake=curtainWake
+        val shouldUncover=curtainOn && mask?.isAttachedToWindow==true
+        if(shouldUncover) {
+            mask?.visibility=View.INVISIBLE
+            wake?.visibility=View.INVISIBLE
+        }
+        fun restore() {
+            if(shouldUncover && curtainOn) {
+                curtainMask?.visibility=View.VISIBLE
+                curtainWake?.visibility=View.VISIBLE
+            }
+        }
+        val action=Runnable {
+            try {
+                takeScreenshot(android.view.Display.DEFAULT_DISPLAY,mainExecutor,
+                    object:TakeScreenshotCallback {
+                        override fun onSuccess(result:ScreenshotResult) {
+                            var copy:Bitmap?=null
+                            try {
+                                val buffer:HardwareBuffer=result.hardwareBuffer
+                                try {
+                                    val wrapped=Bitmap.wrapHardwareBuffer(
+                                        buffer,result.colorSpace)
+                                    try {
+                                        copy=wrapped?.copy(Bitmap.Config.ARGB_8888,false)
+                                    } finally {
+                                        wrapped?.recycle()
+                                    }
+                                } finally {
+                                    buffer.close()
+                                }
+                            } catch(e:Exception) {
+                                android.util.Log.w("WordscapesAuto",
+                                    "Screenshot buffer failed",e)
+                            } finally {
+                                restore()
+                            }
+                            callback(copy)
+                        }
+                        override fun onFailure(errorCode:Int) {
+                            restore()
+                            message("Screenshot error $errorCode — retry")
+                            callback(null)
+                        }
+                    })
+            }catch(e:Exception) {
+                restore()
+                android.util.Log.w("WordscapesAuto",
+                    "Screenshot operation threw",e)
+                callback(null)
+            }
+        }
+        handler.postDelayed(action,if(shouldUncover)160L else 0L)
     }
 
     private fun calibrate() {

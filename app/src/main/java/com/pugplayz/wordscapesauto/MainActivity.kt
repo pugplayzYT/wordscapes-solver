@@ -124,6 +124,25 @@ class MainActivity : Activity() {
             setTextColor(Color.rgb(79,93,115))
             setPadding(0,dp(8),0,dp(16))
         })
+        val curtainPrefs=getSharedPreferences("wordscapes.curtain",MODE_PRIVATE)
+        root.addView(CheckBox(this).apply {
+            text="Black screen curtain during AUTO (OLED-friendly)"
+            textSize=16f
+            isChecked=curtainPrefs.getBoolean("auto_dark",false)
+            setOnCheckedChangeListener { _,enabled ->
+                curtainPrefs.edit().putBoolean("auto_dark",enabled).apply()
+                WordscapesService.instance?.setCurtainPreference(enabled)
+            }
+        },LinearLayout.LayoutParams(-1,dp(64)))
+        root.addView(TextView(this).apply {
+            text="The display stays logically ON for screenshots and touches. " +
+                "The bot covers it in black, reduces brightness, and briefly " +
+                "uncovers it for screenshots. Flashes may occur. Tap the dark " +
+                "WAKE tab at top-right to reveal the game without stopping AUTO."
+            textSize=13f
+            setTextColor(Color.rgb(91,105,123))
+            setPadding(0,0,0,dp(15))
+        })
         root.addView(CheckBox(this).apply {
             text = "Auto-run after confident SCAN"
             textSize = 16f
@@ -146,7 +165,8 @@ class MainActivity : Activity() {
             text = "CONTROLS IN WORDSCAPES:\n\n" +
                 "AUTO — Gemma reads menu, wheel, victory and ad close/skip " +
                 "buttons; the phone performs gestures.\n\n" +
-                "SCAN — One Gemma scan of an open puzzle and review.\n\n" +
+                "SCAN — One Gemma scan of an open puzzle and review.\\n\\n" +
+                "DARK — Cover the display in black while AUTO keeps running.\\n\\n" +
                 "CAL — Optional wheel crop area; mainly for classic OCR.\n\n" +
                 "STOP — Immediately cancel the current run.\n\n" +
                 "HIDE — Stop and remove controls.\n\n" +
