@@ -354,56 +354,96 @@ class WordscapesService : AccessibilityService() {
     private fun gemmaReadWheel(bitmap:Bitmap,bounds:android.graphics.RectF,
                                ticket:Int,oneShot:Boolean) {
         message("Gemma: reading enlarged wheel…")
-        gemma.readWheel(bitmap,bounds) { answer ->
+        gemma.readWheel(bitmap,bounds) { first ->
             handler.post {
-                if (ticket != generation || (!oneShot && (!autoPilot || !gemmaMode))) {
+                if(ticket != generation || (!oneShot && (!autoPilot || !gemmaMode))) {
                     bitmap.recycle()
                     return@post
                 }
-                val wheel=answer.getOrNull()
-                if(wheel == null) {
+                val initial=first.getOrNull()
+                if(initial==null) {
                     bitmap.recycle()
-                    gemmaError(answer.exceptionOrNull()?.message ?: "Wheel reading failed",oneShot)
+                    gemmaError(first.exceptionOrNull()?.message ?: "Wheel reading failed",oneShot)
                     return@post
                 }
-                val letters=wheel.letters
-                val points=wheel.points
-                val dictionary=WordEngine.solve(letters)
-                if(dictionary.isEmpty() || dictionary.none{it.length==letters.length}) {
-                    bitmap.recycle()
-                    gemmaError("Read $letters, but no full-length dictionary word",oneShot)
+                if(oneShot) {
+                    // SCAN is intended for diagnosis. Show the very first
+                    // returned recognition and marker locations for inspection.
+                    gemmaUseWheel(bitmap,initial,oneShot)
                     return@post
                 }
-                val cal=Calibration(wheel.center,wheel.radius*1.38f)
-                pendingCalibration=cal
-                pendingPoints=points
-                pendingWheel=WheelResult(points,wheel.confidence.toFloat(),
-                    letters.length,wheel.center,wheel.radius)
-                pending=letters
-                glyphSamples=emptyList()
-                // Gemma returns one estimate; human review remains available.
-                uncertainSlots=emptyList()
-                scanPreview?.recycle()
-                scanPreview=Bitmap.createBitmap(bitmap,
-                    wheel.screenshotCrop.left,wheel.screenshotCrop.top,
-                    wheel.screenshotCrop.width(),wheel.screenshotCrop.height())
-                scanPreviewOrigin=Spot(wheel.screenshotCrop.left.toFloat(),
-                    wheel.screenshotCrop.top.toFloat())
-                bitmap.recycle()
-                // Model coordinate grounding is approximate, so AUTO requires
-                // higher self-reported confidence before performing any swipe.
-                if(wheel.confidence < .72) {
-                    message("AI uncertain: $letters — review positions")
-                    if(oneShot) showReview()
-                    else gemmaError("wheel confidence too low",false)
-                    return@post
+                // Don't spend the user's coins/time on single-pass invented
+                // letters or screen coordinates. Re-read the same enlarged
+                // crop independently and compare letter-by-letter plus touches.
+                message("Gemma: confirming ${initial.letters}…")
+                gemma.readWheel(bitmap,bounds) { second ->
+                    handler.post {
+                        if(ticket != generation || !autoPilot || !gemmaMode) {
+                            bitmap.recycle()
+                            return@post
+                        }
+                        val again=second.getOrNull()
+                        if(again==null || again.letters!=initial.letters ||
+                            again.points.size!=initial.points.size) {
+                            bitmap.recycle()
+                            gemmaError("AI wheel readings disagree",false)
+                            return@post
+                        }
+                        val tolerance=max(14f,initial.radius*.32f)
+                        if(initial.points.indices.any {
+                            hypot(initial.points[it].x-again.points[it].x,
+                                  initial.points[it].y-again.points[it].y)>tolerance
+                        }) {
+                            bitmap.recycle()
+                            gemmaError("AI touch positions disagree",false)
+                            return@post
+                        }
+                        val averaged=initial.points.indices.map {
+                            Spot((initial.points[it].x+again.points[it].x)/2f,
+                                 (initial.points[it].y+again.points[it].y)/2f)
+                        }
+                        val center=Spot(averaged.map{it.x}.average().toFloat(),
+                            averaged.map{it.y}.average().toFloat())
+                        val rad=averaged.map{hypot(it.x-center.x,it.y-center.y)}.average().toFloat()
+                        val confirmed=GemmaClient.Wheel(initial.letters,averaged,
+                            center,rad,max(initial.confidence,again.confidence),
+                            initial.screenshotCrop)
+                        gemmaUseWheel(bitmap,confirmed,false)
+                    }
                 }
-                gemmaFailures=0
-                gemmaIdleCount=0
-                message("Gemma: $letters • ${dictionary.size} words")
-                if(oneShot) showReview() else startSolving(letters)
             }
         }
+    }
+
+    private fun gemmaUseWheel(bitmap:Bitmap,wheel:GemmaClient.Wheel,
+                              oneShot:Boolean) {
+        val letters=wheel.letters
+        val points=wheel.points
+        val dictionary=WordEngine.solve(letters)
+        if(dictionary.isEmpty() || dictionary.none{it.length==letters.length}) {
+            bitmap.recycle()
+            gemmaError("AI saw $letters; no full-length word in dictionary",oneShot)
+            return
+        }
+        val cal=Calibration(wheel.center,wheel.radius*1.38f)
+        pendingCalibration=cal
+        pendingPoints=points
+        pendingWheel=WheelResult(points,wheel.confidence.toFloat(),
+            letters.length,wheel.center,wheel.radius)
+        pending=letters
+        glyphSamples=emptyList()
+        uncertainSlots=emptyList()
+        scanPreview?.recycle()
+        scanPreview=Bitmap.createBitmap(bitmap,
+            wheel.screenshotCrop.left,wheel.screenshotCrop.top,
+            wheel.screenshotCrop.width(),wheel.screenshotCrop.height())
+        scanPreviewOrigin=Spot(wheel.screenshotCrop.left.toFloat(),
+            wheel.screenshotCrop.top.toFloat())
+        bitmap.recycle()
+        gemmaFailures=0
+        gemmaIdleCount=0
+        message("Gemma: $letters • ${dictionary.size} words")
+        if(oneShot) showReview() else startSolving(letters)
     }
 
     private fun gemmaNavigate(scene:GemmaClient.Scene) {
