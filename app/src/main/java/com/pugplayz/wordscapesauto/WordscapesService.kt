@@ -780,66 +780,30 @@ class WordscapesService : AccessibilityService() {
         }
     }
 
+    /**
+     * One straightforward AI character read. The model no longer estimates
+     * every tile position, so there is no duplicate-coordinate rejection
+     * or second expensive/inconsistent coordinate confirmation step.
+     */
     private fun gemmaReadWheel(bitmap:Bitmap,bounds:android.graphics.RectF,
                                ticket:Int,oneShot:Boolean) {
-        message("Gemma: reading enlarged wheel…")
-        gemma.readWheel(bitmap,bounds) { first ->
+        message("Gemma: reading wheel characters…")
+        gemma.readWheel(bitmap,bounds) { result ->
             handler.post {
-                if(ticket != generation || (!oneShot && (!autoPilot || !gemmaMode))) {
+                if(ticket!=generation ||
+                    (!oneShot && (!autoPilot || !gemmaMode))) {
                     bitmap.recycle()
                     return@post
                 }
-                val initial=first.getOrNull()
-                if(initial==null) {
+                val wheel=result.getOrNull()
+                if(wheel==null) {
                     bitmap.recycle()
-                    gemmaError(first.exceptionOrNull()?.message ?: "Wheel reading failed",oneShot)
+                    gemmaError(result.exceptionOrNull()?.message
+                        ?: "Cannot read wheel characters",oneShot)
                     return@post
                 }
-                if(oneShot) {
-                    // SCAN is intended for diagnosis. Show the very first
-                    // returned recognition and marker locations for inspection.
-                    gemmaUseWheel(bitmap,initial,oneShot)
-                    return@post
-                }
-                // Don't spend the user's coins/time on single-pass invented
-                // letters or screen coordinates. Re-read the same enlarged
-                // crop independently and compare letter-by-letter plus touches.
-                message("Gemma: confirming ${initial.letters}…")
-                gemma.readWheel(bitmap,bounds) { second ->
-                    handler.post {
-                        if(ticket != generation || !autoPilot || !gemmaMode) {
-                            bitmap.recycle()
-                            return@post
-                        }
-                        val again=second.getOrNull()
-                        if(again==null || again.letters!=initial.letters ||
-                            again.points.size!=initial.points.size) {
-                            bitmap.recycle()
-                            gemmaError("AI wheel readings disagree",false)
-                            return@post
-                        }
-                        val tolerance=max(14f,initial.radius*.32f)
-                        if(initial.points.indices.any {
-                            hypot(initial.points[it].x-again.points[it].x,
-                                  initial.points[it].y-again.points[it].y)>tolerance
-                        }) {
-                            bitmap.recycle()
-                            gemmaError("AI touch positions disagree",false)
-                            return@post
-                        }
-                        val averaged=initial.points.indices.map {
-                            Spot((initial.points[it].x+again.points[it].x)/2f,
-                                 (initial.points[it].y+again.points[it].y)/2f)
-                        }
-                        val center=Spot(averaged.map{it.x}.average().toFloat(),
-                            averaged.map{it.y}.average().toFloat())
-                        val rad=averaged.map{hypot(it.x-center.x,it.y-center.y)}.average().toFloat()
-                        val confirmed=GemmaClient.Wheel(initial.letters,averaged,
-                            center,rad,max(initial.confidence,again.confidence),
-                            initial.screenshotCrop)
-                        gemmaUseWheel(bitmap,confirmed,false)
-                    }
-                }
+                message("Wheel: ${wheel.letters} (dictionary solver)")
+                gemmaUseWheel(bitmap,wheel,oneShot)
             }
         }
     }
@@ -867,38 +831,15 @@ class WordscapesService : AccessibilityService() {
             wheel.screenshotCrop.width(),wheel.screenshotCrop.height())
         scanPreviewOrigin=Spot(wheel.screenshotCrop.left.toFloat(),
             wheel.screenshotCrop.top.toFloat())
+        bitmap.recycle()
         gemmaFailures=0
         gemmaIdleCount=0
         if(oneShot) {
-            bitmap.recycle()
-            message("Gemma: $letters • inspect detected touch points")
+            message("Wheel: $letters • review characters before swiping")
             showReview()
-            return
-        }
-
-        // The very first Gemma response is NOT the whole solution.
-        // We collect subsequent batches on demand if the puzzle remains.
-        // Crucially, even 0-3 answers here are not a reason to abandon it.
-        val ticket=generation
-        message("Gemma: $letters • first common-word batch…")
-        gemma.suggestWords(letters,bitmap,round=0) { outcome ->
-            handler.post {
-                bitmap.recycle()
-                if(ticket!=generation || !autoPilot || !gemmaMode)
-                    return@post
-                val suggestions=outcome.getOrNull().orEmpty()
-                    .filter{WordEngine.isValid(it,letters)}
-                    .distinct()
-                if(outcome.isFailure)
-                    android.util.Log.w("WordscapesAuto",
-                        "AI initial word generation failed; trying another batch",
-                        outcome.exceptionOrNull())
-                aiCandidateWords=suggestions
-                aiSuggestionRound=1
-                message("$letters • ${suggestions.size} AI suggestions" +
-                    if(suggestions.size<8)" (will request more)" else "")
-                startSolving(letters)
-            }
+        } else {
+            message("Wheel: $letters • looking up offline words")
+            startSolving(letters)
         }
     }
 
@@ -1427,36 +1368,23 @@ class WordscapesService : AccessibilityService() {
         activeCalibration=cal
         activeWheel=pendingWheel
 
-        // Gemma produces the word list; Kotlin only verifies tile usage.
-        // No WordEngine.solve() or Datamuse in AI mode.
-        solveWords=if(gemmaMode) {
-            aiCandidateWords.filter{WordEngine.isValid(it,letters)}.distinct()
-        } else WordEngine.solve(letters)
-        aiCandidateWords=emptyList()
-        aiSeenWords.clear()
-        aiSeenWords.addAll(solveWords)
-        aiRefillInFlight=false
-        aiEmptyRounds=0
+        // Dictionary-only word selection (including when Gemma vision
+        // reads the letter wheel). No LLM word generation or Datamuse.
+        // The bundled frequency list ranks real common words first.
+        solveWords=WordEngine.solve(letters,limit=260)
         solveIndex=0
-        if(solveWords.isEmpty() && !gemmaMode) {
-            message("No dictionary words for $letters")
+        if(solveWords.isEmpty()) {
+            message("Dictionary found no playable words for $letters")
+            if(autoPilot)stopAutomation("Check wheel letters: $letters")
+            else showReview()
             return
         }
         isRunning=true
         generation++
         val ticket=generation
-        message("${solveWords.size} ${if(gemmaMode)"AI" else "dictionary"} initial words")
+        message("$letters • ${solveWords.size} ranked dictionary words")
         baselineImage?.recycle()
         baselineImage=null
-        if(!gemmaMode) {
-            Thread {
-                val extras=DatamuseClient.supplementalWords(letters)
-                handler.post {
-                    if(ticket==generation && isRunning)
-                        solveWords=(solveWords+extras).distinct().take(170)
-                }
-            }.start()
-        }
         capture { bitmap ->
             if(ticket!=generation){bitmap?.recycle();return@capture}
             if(bitmap==null) {
@@ -1469,83 +1397,24 @@ class WordscapesService : AccessibilityService() {
         }
     }
 
-    /**
-     * Ask Gemma for another batch *on the CURRENT board* once all current
-     * suggestions have been tried. It can generate as many cumulative words
-     * as required across rounds, with no 32-word cutoff.
-     *
-     * Six CONSECUTIVE zero-new-answer batches indicate a stuck model or a
-     * misread wheel. We pause for review instead of endlessly repeating.
-     */
-    private fun refillAiWords(ticket:Int) {
-        if(ticket!=generation || !isRunning || !autoPilot || !gemmaMode)return
-        if(aiRefillInFlight)return
-        aiRefillInFlight=true
-        message("Gemma: more words for $actualLetters (batch ${aiSuggestionRound+1})…")
-        capture { image ->
-            if(ticket!=generation || !isRunning || !autoPilot || !gemmaMode) {
-                image?.recycle()
-                return@capture
-            }
-            if(image==null) {
-                aiRefillInFlight=false
-                stopAutomation("AI paused: cannot capture next-word screenshot")
-                return@capture
-            }
-            val cal=activeCalibration
-            if(cal!=null && wheelGone(image,cal)) {
-                image.recycle()
-                aiRefillInFlight=false
-                stop("Level complete")
-                handler.postDelayed({if(autoPilot)gemmaInspect()},1200)
-                return@capture
-            }
-            val round=aiSuggestionRound++
-            val exclusions=aiSeenWords.toSet()
-            gemma.suggestWords(actualLetters,image,exclusions,round) { outcome ->
-                handler.post {
-                    image.recycle()
-                    if(ticket!=generation || !isRunning ||
-                       !autoPilot || !gemmaMode) return@post
-                    aiRefillInFlight=false
-                    val newWords=outcome.getOrNull().orEmpty()
-                        .filter{WordEngine.isValid(it,actualLetters)}
-                        .filter{it !in aiSeenWords}.distinct()
-                    if(newWords.isEmpty()) {
-                        aiEmptyRounds++
-                        android.util.Log.w("WordscapesAuto",
-                            "No new AI words (round=$round, consecutive=$aiEmptyRounds)",
-                            outcome.exceptionOrNull())
-                        if(aiEmptyRounds>=6) {
-                            stopAutomation("AI found no NEW words in 6 batches; review $actualLetters")
-                            if(reviewPanel==null)showReview()
-                        } else {
-                            message("No new words this batch; trying another strategy…")
-                            handler.postDelayed({nextWord(ticket)},900)
-                        }
-                        return@post
-                    }
-                    aiEmptyRounds=0
-                    aiSeenWords.addAll(newWords)
-                    solveWords=solveWords+newWords
-                    message("+${newWords.size} new AI words • ${solveWords.size} total")
-                    handler.postDelayed({nextWord(ticket)},160)
-                }
-            }
-        }
-    }
-
     private fun nextWord(ticket: Int) {
         if (ticket != generation || !isRunning) return
         if (solveIndex >= solveWords.size) {
-            if(gemmaMode && autoPilot) {
-                refillAiWords(ticket)
-                return
+            // Try the remaining ranked dictionary words as a SECOND batch.
+            // Never ask the language model for more speculative anagrams.
+            if(gemmaMode && autoPilot && solveWords.size<850) {
+                val additional=WordEngine.solve(actualLetters,limit=850)
+                    .filter{it !in solveWords}
+                if(additional.isNotEmpty()) {
+                    solveWords=solveWords+additional
+                    message("Dictionary extended by ${additional.size} words")
+                    handler.postDelayed({nextWord(ticket)},160)
+                    return
+                }
             }
-            stop("Words exhausted. Review OCR or letter positions.")
-            if (autoPilot)
-                handler.postDelayed({if(autoPilot)inspectScene(false)},700)
-            else showReview()
+            stop("Dictionary exhausted for $actualLetters • check letters")
+            if(reviewPanel==null)showReview()
+            if(autoPilot)stopAutomation("Dictionary exhausted; review wheel letters")
             return
         }
         val word = solveWords[solveIndex++]
