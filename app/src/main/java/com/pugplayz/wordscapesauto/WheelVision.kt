@@ -157,7 +157,7 @@ class WheelVision {
                 }
                 val gw=rightmost-leftmost+1;val gh=lower-upper+1
                 if(gh.toFloat() !in minH..maxH||gw<size*.009f||gw>size*.20f)continue
-                if(mass<max(8,gh*1.3f).toInt()||mass>gw*gh*.88f)continue
+                if(mass<max(8f,gh*1.3f).toInt()||mass>gw*gh*.88f)continue
                 val point=Spot(area.center.x+(leftmost+rightmost-size)*.5f*scale,
                     area.center.y+(upper+lower-size)*.5f*scale)
                 val dist=hypot(point.x-c.x,point.y-c.y)
