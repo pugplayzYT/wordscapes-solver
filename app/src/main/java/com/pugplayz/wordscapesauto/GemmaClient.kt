@@ -559,94 +559,201 @@ class GemmaClient(private val context: Context) {
     }
 
     /**
-     * Wordscapes v2.8: let the vision model READ CHARACTERS, not perform
-     * pixel-perfect object localization for every tile.
-     *
-     * The previous API required per-letter coordinates and rejected a
-     * perfectly plausible transcription as "Duplicated letter location".
-     * Instead, Gemma reports a clockwise string and optionally the FIRST
-     * letter's rough location. Kotlin constructs evenly spaced touch points
-     * using the wheel's already-detected bounding box.
-     *
-     * Calibration is approximate (Wordscapes wheels rotate/layout vary),
-     * so SCAN review is still available when letters or positioning differ.
+     * Wordscapes wheel recognition:
+     * Restore the original PER-GLYPH Gemma output format (which worked
+     * better than v2.8's single string request). Positions are optional
+     * evidence, NOT a reason to discard a correct multi-letter reading.
+     * The actual offline dictionary remains responsible for word choices.
      */
     fun readWheel(full:Bitmap,box:RectF,callback:(Result<Wheel>)->Unit) {
         Thread {
             val outcome=runCatching {
-                val margin=min(box.width(),box.height())*.22f
-                val bounds=Rect(
-                    floor(box.left-margin).toInt().coerceIn(0,full.width-1),
-                    floor(box.top-margin).toInt().coerceIn(0,full.height-1),
-                    ceil(box.right+margin).toInt().coerceIn(1,full.width),
-                    ceil(box.bottom+margin).toInt().coerceIn(1,full.height)
-                )
-                if(bounds.width()<80||bounds.height()<80)
-                    error("Wheel crop too small: use SCAN or open puzzle")
-                val crop=Bitmap.createBitmap(full,bounds.left,bounds.top,
-                    bounds.width(),bounds.height())
-                val json=try {
-                    ask(crop,"""
-                        LOOK ONLY at the Wordscapes circular letter wheel in
-                        this image. Read the visible single-letter tiles.
+                val areaCenter=Spot(box.centerX(),box.centerY())
+                val areaRadius=min(box.width(),box.height())*.5f
+                if(areaRadius<40f)error("Wheel crop is too small; enlarge CAL")
 
-                        Reply with ONE JSON OBJECT in this exact shape:
-                        {"letters":"STONE","first_x":500,"first_y":145,
-                         "confidence":0.95}
+                var labels:List<Char> = emptyList()
+                var observed:List<Spot?> = emptyList()
+                var usedBounds:Rect?=null
+                var confidence=0.0
 
-                        'letters' must be a STRING, NOT an array of objects.
-                        Write every visible tile letter ONCE, in CLOCKWISE
-                        ORDER, starting at the TOPMOST physical letter.
-                        These are individual letters, NOT a solved word.
-                        Duplicate letters must appear once PER ACTUAL TILE.
-                        An O is the letter O, not the digit 0.
-                        Usually 4-7 tiles; count them carefully; include ALL.
-                        Do not report words from the crossword above.
-                        first_x/first_y is ONLY the approximate center of
-                        the very first/topmost letter, on 0-1000 crop scale.
-                        DO NOT provide positions for any other letters.
-                        Do not solve the puzzle. No Markdown, only JSON.
-                    """.trimIndent(),1400)
-                }finally {crop.recycle()}
-
-                val raw=json.optString("letters","").trim()
-                    .uppercase(Locale.US).replace('0','O')
-                    .replace(Regex("[^A-Z]"),"")
-                if(raw.length !in 3..12)
-                    error("Gemma read ${raw.length} wheel letters; check wheel crop")
-                val cx=box.centerX()
-                val cy=box.centerY()
-                val radius=min(box.width(),box.height())*.44f
-                if(radius<16f)error("Wheel geometry too small")
-
-                // Use the sole approximate topmost-letter coordinate only
-                // to align the ring's rotation. Bad coordinates are ignored
-                // instead of causing repeated AI/OCR retry failures.
-                val fx=json.optDouble("first_x",Double.NaN)
-                val fy=json.optDouble("first_y",Double.NaN)
-                val firstX=bounds.left+pct(fx,bounds.width())
-                val firstY=bounds.top+pct(fy,bounds.height())
-                val dx=firstX-cx
-                val dy=firstY-cy
-                val distance=hypot(dx,dy)
-                val anchorIsPlausible=fx.isFinite() && fy.isFinite() &&
-                    fx in 0.0..1000.0 && fy in 0.0..1000.0 &&
-                    distance in radius*.55f..radius*1.50f &&
-                    dy<radius*.12f
-                val angle=if(anchorIsPlausible)atan2(dy,dx)
-                    else (-PI/2).toFloat()
-                val increment=(2*PI/raw.length).toFloat()
-                val points=raw.indices.map{index ->
-                    val a=angle+increment*index
-                    Spot(
-                        (cx+radius*cos(a)).coerceIn(2f,full.width-3f),
-                        (cy+radius*sin(a)).coerceIn(2f,full.height-3f)
+                for(attempt in 0..1) {
+                    // Second try is only used when the first returns fewer
+                    // than three actual letters. No mandatory duplicate
+                    // full-resolution inference on a successful read.
+                    val margin=min(box.width(),box.height())*
+                        (if(attempt==0).16f else .32f)
+                    val bounds=Rect(
+                        floor(box.left-margin).toInt().coerceIn(0,full.width-1),
+                        floor(box.top-margin).toInt().coerceIn(0,full.height-1),
+                        ceil(box.right+margin).toInt().coerceIn(1,full.width),
+                        ceil(box.bottom+margin).toInt().coerceIn(1,full.height)
                     )
+                    if(bounds.width()<80 || bounds.height()<80)
+                        error("Wheel crop too small; enlarge CAL")
+                    val crop=Bitmap.createBitmap(full,bounds.left,bounds.top,
+                        bounds.width(),bounds.height())
+                    val json=try {
+                        ask(crop,if(attempt==0)"""
+                            This image contains the Wordscapes ROUND LETTER
+                            WHEEL. Read ALL individual letters on the wheel.
+                            Return ONLY one JSON object:
+                            {"letters":[{"c":"E","x":500,"y":150},
+                                        {"c":"P","x":800,"y":400},
+                                        {"c":"A","x":600,"y":800}],
+                             "confidence":0.95}
+
+                            IMPORTANT:
+                            - Output ONE object for EVERY visible letter tile,
+                              not one object for the whole wheel.
+                            - Usually there are 4, 5, 6, or 7 LETTER TILES.
+                              Count the tiles and include ALL of them.
+                            - Order the objects clockwise starting from the
+                              uppermost actual letter. Duplicate LETTERS are
+                              allowed when they are separate physical tiles.
+                            - Each "c" is exactly one A-Z character.
+                            - x/y are APPROXIMATE centers, 0..1000 relative
+                              to THIS IMAGE. If uncertain, use 0 for x/y;
+                              do not omit a readable character.
+                            - Do not read words in the crossword above.
+                            - Do NOT solve the puzzle or group letters into a word.
+                            - JSON only.
+                        """.trimIndent() else """
+                            CORRECTION: you must TRANSCRIBE THE ENTIRE CIRCULAR
+                            LETTER WHEEL, not just one letter or one word.
+                            First count ALL the large single-letter tiles,
+                            then list EACH tile's character in clockwise order,
+                            starting at the topmost letter.
+                            Return JSON:
+                            {"letters":[{"c":"A"},{"c":"B"},{"c":"C"},
+                                        {"c":"D"},{"c":"E"}],
+                             "confidence":0.7}
+                            There may be 3-12 letters. Include repeated
+                            letters when they occupy different tiles. Do not
+                            include letters from the grid above. Approximate
+                            x/y per letter is OPTIONAL in this second attempt.
+                        """.trimIndent(),1400)
+                    }finally {
+                        crop.recycle()
+                    }
+                    val read=mutableListOf<Char>()
+                    val coords=mutableListOf<Spot?>()
+                    val array=json.optJSONArray("letters")
+                    if(array!=null) {
+                        for(i in 0 until array.length()) {
+                            val element=array.optJSONObject(i)
+                            val c=if(element!=null)element.optString("c","")
+                                else array.optString(i,"")
+                            val label=c.trim().uppercase(Locale.US).replace('0','O')
+                            if(label.length!=1 || label[0] !in 'A'..'Z')
+                                continue
+                            read.add(label[0])
+                            val fx=element?.optDouble("x",Double.NaN) ?:Double.NaN
+                            val fy=element?.optDouble("y",Double.NaN) ?:Double.NaN
+                            coords.add(if(fx.isFinite()&&fy.isFinite()&&
+                                fx in 10.0..990.0&&fy in 10.0..990.0) {
+                                Spot(bounds.left+pct(fx,bounds.width()),
+                                     bounds.top+pct(fy,bounds.height()))
+                            }else null)
+                        }
+                    } else {
+                        // Support both historical model response formats.
+                        val raw=json.optString("letters","").trim()
+                            .uppercase(Locale.US).replace('0','O')
+                        for(ch in raw)if(ch in 'A'..'Z') {
+                            read.add(ch);coords.add(null)
+                        }
+                    }
+                    if(read.size in 3..12) {
+                        labels=read;observed=coords;usedBounds=bounds
+                        confidence=json.optDouble("confidence",0.65)
+                        break
+                    }
+                    android.util.Log.w("WordscapesAuto",
+                        "Gemma wheel attempt ${attempt+1}: found ${read.size} letters, retrying")
                 }
-                Wheel(raw,points,Spot(cx,cy),radius,
-                    json.optDouble("confidence",0.0).let {
-                        if(it.isFinite())it.coerceIn(0.0,1.0)else 0.0
-                    },bounds)
+
+                if(labels.size !in 3..12)
+                    error("Gemma couldn't read all wheel letters (SCAN to inspect)")
+                val n=labels.size
+                val valid=observed.filterNotNull().filter {
+                    val dist=hypot(it.x-areaCenter.x,it.y-areaCenter.y)
+                    dist in areaRadius*.22f..areaRadius*1.30f
+                }
+                val fullyLocated=valid.size==n && observed.all{it!=null}
+                val locCenter=if(fullyLocated)Spot(
+                    valid.map{it.x}.average().toFloat(),
+                    valid.map{it.y}.average().toFloat())else areaCenter
+                val locDistances=valid.map {
+                    hypot(it.x-locCenter.x,it.y-locCenter.y)
+                }
+                val medRadius=locDistances.sorted().let{
+                    if(it.isNotEmpty())it[it.size/2]else areaRadius*.65f
+                }
+                val coherent=fullyLocated && medRadius>=areaRadius*.20f &&
+                    locDistances.all{
+                        it in medRadius*.55f..medRadius*1.50f
+                    } && valid.indices.all{i->
+                        (i+1 until valid.size).all{j->
+                            hypot(valid[i].x-valid[j].x,
+                                  valid[i].y-valid[j].y)>
+                                medRadius*.28f
+                        }
+                    }
+
+                val outputPoints:List<Spot>
+                val outputLetters:String
+                val center:Spot
+                val radius:Float
+                if(coherent) {
+                    // Old high-quality output: KEEP REAL MODEL POINTS
+                    // rather than replacing them with a guessed ring.
+                    center=locCenter;radius=medRadius
+                    val paired=labels.indices.map{i->labels[i] to valid[i]}
+                    val sorted=paired.sortedBy {
+                        (atan2(it.second.y-center.y,it.second.x-center.x)+
+                            2*PI+PI/2)%(2*PI)
+                    }
+                    outputLetters=sorted.map{it.first}.joinToString("")
+                    outputPoints=sorted.map{it.second}
+                } else {
+                    // Partial/duplicated model coordinates: repair the
+                    // geometry instead of rejecting the readable letters.
+                    // A radial image analysis looks for actual glyph
+                    // positions; failing that, use the wheel crop's circle.
+                    val estimate=RadialFallback.estimate(full,
+                        Calibration(areaCenter,areaRadius),
+                        n,valid)
+                    center=areaCenter
+                    val candidates=estimate?.wheel?.points
+                    val usable=candidates!=null && candidates.size==n &&
+                        estimate.score>.11f
+                    val bestR=if(valid.isNotEmpty()) {
+                        valid.map{hypot(it.x-center.x,it.y-center.y)}
+                            .sorted().let{it[it.size/2]}
+                    }else areaRadius*.65f
+                    radius=if(usable) estimate!!.wheel.radius else
+                        bestR.coerceIn(areaRadius*.40f,areaRadius*.84f)
+                    if(usable) {
+                        outputPoints=candidates!!
+                    }else{
+                        val startAngle=(-PI/2).toFloat()
+                        val step=(2*PI/n).toFloat()
+                        outputPoints=(0 until n).map{i->
+                            val theta=startAngle+step*i
+                            Spot(center.x+radius*cos(theta),
+                                center.y+radius*sin(theta))
+                        }
+                    }
+                    // The model has been instructed to give CLOCKWISE order
+                    // starting from top; never sort duplicated fake XY data.
+                    outputLetters=labels.joinToString("")
+                    android.util.Log.i("WordscapesAuto",
+                        "Wheel geometry repaired from screenshot; $n letters")
+                }
+                Wheel(outputLetters,outputPoints,center,radius,
+                    confidence.takeIf{it.isFinite()}?.coerceIn(0.0,1.0)
+                        ?:0.55,usedBounds!!)
             }
             callback(outcome)
         }.start()
