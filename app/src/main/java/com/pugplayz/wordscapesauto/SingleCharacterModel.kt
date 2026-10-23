@@ -69,15 +69,49 @@ class SingleCharacterModel(private val context: Context) {
         patch.eraseColor(Color.WHITE)
         Canvas(patch).drawBitmap(image,Rect(l,t,r,b),RectF(24f,24f,232f,232f),
             Paint(Paint.FILTER_BITMAP_FLAG))
+        // Tesseract was trained on ordinary printed lettering; Wordscapes
+        // letters may be white on blue/purple. Normalizing to black-on-white
+        // prevents the background of a game tile from dominating prediction.
+        val normalized = Bitmap.createBitmap(256,256,Bitmap.Config.ARGB_8888)
+        val pix=IntArray(256*256)
+        patch.getPixels(pix,0,256,0,0,256,256)
+        val lum=IntArray(256*256) { i ->
+            val p=pix[i]
+            (Color.red(p)*299+Color.green(p)*587+Color.blue(p)*114)/1000
+        }
+        val histogram=IntArray(256)
+        for(y in 44 until 212 step 3) for(x in 44 until 212 step 3)
+            histogram[lum[y*256+x]]++
+        var halfCount=histogram.sum()/2;var background=127
+        for(i in histogram.indices) {
+            halfCount-=histogram[i]
+            if(halfCount<=0){background=i;break}
+        }
+        val lightGlyph=background<145
+        val brightThreshold=max(157,background+37).coerceAtMost(245)
+        val darkThreshold=min(117,background-37).coerceAtLeast(18)
+        for(i in pix.indices) {
+            val darkInk=if(lightGlyph) lum[i]>=brightThreshold else lum[i]<=darkThreshold
+            pix[i]=if(darkInk) Color.BLACK else Color.WHITE
+        }
+        normalized.setPixels(pix,0,256,0,0,256,256)
         return try {
-            tess.setImage(patch)
-            val str=tess.getUTF8Text()?.trim()?.uppercase(Locale.US) ?: ""
-            val conf=tess.meanConfidence()
-            val letter=str.singleOrNull()
-            if(letter!=null && letter in 'A'..'Z') Answer(letter,conf) else null
+            val readings=mutableListOf<Answer>()
+            for(view in listOf(normalized,patch)) {
+                tess.setImage(view)
+                val str=tess.getUTF8Text()?.trim()?.uppercase(Locale.US) ?: ""
+                val confidence=tess.meanConfidence()
+                val letter=str.singleOrNull()
+                if(letter!=null && letter in 'A'..'Z')
+                    readings.add(Answer(letter,confidence))
+            }
+            readings.maxByOrNull { it.confidence }
         } catch (_: Exception) {
             null
-        } finally { patch.recycle() }
+        } finally {
+            normalized.recycle()
+            patch.recycle()
+        }
     }
 
     @Synchronized
