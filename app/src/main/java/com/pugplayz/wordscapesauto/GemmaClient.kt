@@ -196,87 +196,69 @@ class GemmaClient(private val context: Context) {
      *
      * This method is invoked only when no full-length word is found locally.
      */
-    fun suggestWords(letters:String, callback:(Result<List<String>>)->Unit) {
+    /**
+     * Word suggestions come from Gemma alone. The full screenshot lets it
+     * inspect crossword slot lengths, not just blindly enumerate every
+     * permutation. No bundled dictionary or Datamuse results are consulted.
+     *
+     * Model suggestions are not inherently trustworthy. WordEngine.isValid
+     * only validates tile multiplicities and lengths, NOT dictionary status.
+     */
+    fun suggestWords(
+        letters:String,
+        board:Bitmap,
+        excluded:Set<String> = emptySet(),
+        callback:(Result<List<String>>)->Unit
+    ) {
         Thread {
             val result=runCatching {
-                val cleaned=letters.uppercase(Locale.US)
-                if(cleaned.length !in 3..12 || cleaned.any{it !in 'A'..'Z'})
-                    error("Invalid wheel letters")
-                val (server,model)=settings()
-                val prompt="""
-                    Wordscapes word puzzle. Available letter tiles: $cleaned.
-                    Find real, common English words that can be made using the
-                    exact available tiles. Each tile can be used ONCE per word.
-                    IMPORTANT: include FULL LENGTH words using EVERY tile;
-                    those are especially valuable for finishing the level.
-                    Include shorter 3+ letter words too. Do not add letters.
-                    Never return made-up words, proper names or abbreviations.
-                    Return ONLY valid JSON like:
-                    {"words":["EXAMPLE","WORD"]}
-                    Prefer up to 45 candidates with longest words first.
-                """.trimIndent()
-                var failure="No suggestions returned"
-                for(attempt in 0..1) {
-                    val request=JSONObject()
-                        .put("model",model)
-                        .put("think",false)
-                        .put("stream",false)
-                        .put("format","json")
-                        .put("keep_alive","30m")
-                        .put("options",JSONObject()
-                            .put("temperature",0)
-                            .put("num_predict",if(attempt==0)1300 else 2000))
-                        .put("messages",JSONArray().put(JSONObject()
-                            .put("role","user")
-                            .put("content",prompt)))
-                    val conn=URL("$server/api/chat").openConnection() as HttpURLConnection
-                    conn.requestMethod="POST"
-                    conn.setRequestProperty("Content-Type","application/json")
-                    conn.connectTimeout=9000
-                    conn.readTimeout=180000
-                    conn.doOutput=true
-                    val reply=try {
-                        conn.outputStream.use {
-                            it.write(request.toString().toByteArray(Charsets.UTF_8))
-                        }
-                        val code=conn.responseCode
-                        val raw=(if(code in 200..299)conn.inputStream else conn.errorStream)
-                            ?.bufferedReader()?.use{it.readText()} ?: ""
-                        if(code !in 200..299)error("Anagram HTTP $code: ${raw.take(100)}")
-                        JSONObject(raw).optJSONObject("message")?.optString("content","")
-                            ?: ""
-                    }finally {
-                        conn.disconnect()
-                    }
-                    if(reply.isBlank()) {
-                        failure="Gemma returned an empty anagram list"
-                        continue
-                    }
-                    val start=reply.indexOf('{')
-                    val end=reply.lastIndexOf('}')
-                    if(start<0 || end<=start) {
-                        failure="Gemma anagram response was not JSON"
-                        continue
-                    }
-                    val json=try {JSONObject(reply.substring(start,end+1))}
-                        catch(e:org.json.JSONException) {
-                            failure="Gemma anagram JSON invalid"
-                            continue
-                        }
-                    val array=json.optJSONArray("words")
-                    if(array==null) {
-                        failure="Gemma anagram response has no words"
-                        continue
-                    }
-                    val words=LinkedHashSet<String>()
-                    for(i in 0 until array.length()) {
-                        val candidate=array.optString(i,"").trim().uppercase(Locale.US)
-                        if(WordEngine.isValid(candidate,cleaned))words.add(candidate)
-                    }
-                    if(words.isNotEmpty())return@runCatching words.sortedWith(
-                        compareByDescending<String>{it.length}.thenBy{it})
+                val cleaned=letters.trim().uppercase(Locale.US)
+                require(cleaned.length in 3..12 && cleaned.all {it in 'A'..'Z'}) {
+                    "Invalid wheel letters"
                 }
-                error(failure)
+                val previous=excluded.map { it.uppercase(Locale.US) }.toSet()
+                val avoid=previous.take(50).joinToString(", ").ifBlank { "none" }
+                val prompt="""
+                    You are a skilled human player solving the Wordscapes
+                    puzzle in this IMAGE. The letter tiles have already
+                    been reliably read and confirmed: $cleaned.
+
+                    Inspect the crossword grid ABOVE the letter wheel:
+                    count blank cells and estimate required WORD LENGTHS.
+                    Your job is to propose only the most likely REAL,
+                    NORMAL, COMMON English answers to fill that board.
+
+                    Return valid JSON only: {"words":["FIRST","SECOND"]}.
+
+                    Requirements:
+                    - Rank answers in best-first PLAY ORDER, not alphabetically.
+                    - Choose obvious, frequent English words matching the
+                      visible crossword slot lengths FIRST.
+                    - Consider obvious full-length anagrams when plausible.
+                    - Include common shorter slot words, especially 4+ letters.
+                    - 3-letter words only if common and plausibly needed.
+                    - NEVER produce 1- or 2-letter words.
+                    - Each word uses only the available tiles $cleaned, each
+                      occurrence at most once per word (duplicates matter).
+                    - Exclude rare forms, archaic words, proper names,
+                      abbreviations, nonsense, and made-up words.
+                    - Do not brute-force all permutations or bonus words.
+                    - At most 32 DISTINCT suggestions. Fewer is fine.
+                    - Already attempted words; do NOT suggest: $avoid.
+                    - Answer ONLY in JSON, with a 'words' array of strings.
+                """.trimIndent()
+                val json=ask(board,prompt,1400)
+                val array=json.optJSONArray("words") ?:error("Gemma JSON has no words array")
+                val output=LinkedHashSet<String>()
+                for(i in 0 until array.length()) {
+                    val candidate=array.optString(i,"").trim().uppercase(Locale.US)
+                    if(candidate !in previous &&
+                        WordEngine.isValid(candidate,cleaned))
+                        output.add(candidate)
+                    if(output.size >= 32)break
+                }
+                if(output.isEmpty())error("Gemma gave no usable 3+ letter words")
+                output.toList() // Preserve Gemma's common-first ordering.
             }
             callback(result)
         }.start()
