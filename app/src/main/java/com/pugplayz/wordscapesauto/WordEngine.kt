@@ -106,4 +106,7 @@ object WordEngine {
 
 data class Spot(val x: Float, val y: Float)
 
-data class WheelResult(\n    val points: List<Spot>, val confidence: Float, val inferredCount: Int,\n    val center: Spot? = null, val radius: Float = 0f\n)
+data class WheelResult(
+    val points: List<Spot>, val confidence: Float, val inferredCount: Int,
+    val center: Spot? = null, val radius: Float = 0f
+)
