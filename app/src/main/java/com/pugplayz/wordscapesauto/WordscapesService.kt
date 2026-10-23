@@ -64,6 +64,7 @@ class WordscapesService : AccessibilityService() {
     private var glyphSamples: List<GlyphMemory.Sample?> = emptyList()
     private var uncertainSlots: List<Int> = emptyList()
     private var solveWords: List<String> = emptyList()
+    private var aiCandidateWords: List<String> = emptyList()
     private var solveIndex = 0
     private var actualLetters = ""
     private var activePoints: List<Spot> = emptyList()
@@ -562,12 +563,10 @@ class WordscapesService : AccessibilityService() {
                               oneShot:Boolean) {
         val letters=wheel.letters
         val points=wheel.points
+        // The confirmed wheel and its positions must NOT be thrown away just
+        // because our bundled dictionary has incomplete coverage.
         val dictionary=WordEngine.solve(letters)
-        if(dictionary.isEmpty() || dictionary.none{it.length==letters.length}) {
-            bitmap.recycle()
-            gemmaError("AI saw $letters; no full-length word in dictionary",oneShot)
-            return
-        }
+        val missingLongWord=dictionary.none { it.length==letters.length }
         val cal=Calibration(wheel.center,wheel.radius*1.38f)
         pendingCalibration=cal
         pendingPoints=points
@@ -576,6 +575,7 @@ class WordscapesService : AccessibilityService() {
         pending=letters
         glyphSamples=emptyList()
         uncertainSlots=emptyList()
+        aiCandidateWords=emptyList()
         scanPreview?.recycle()
         scanPreview=Bitmap.createBitmap(bitmap,
             wheel.screenshotCrop.left,wheel.screenshotCrop.top,
@@ -585,8 +585,42 @@ class WordscapesService : AccessibilityService() {
         bitmap.recycle()
         gemmaFailures=0
         gemmaIdleCount=0
-        message("Gemma: $letters • ${dictionary.size} words")
-        if(oneShot) showReview() else startSolving(letters)
+        message("Gemma: $letters • ${dictionary.size} local words")
+        if(oneShot) {
+            showReview()
+            return
+        }
+        if(!missingLongWord && dictionary.isNotEmpty()) {
+            startSolving(letters)
+            return
+        }
+        // An absence of a longest word is a DICTIONARY GAP, not proof that
+        // Gemma hallucinated the wheel. Ask the same local model for actual
+        // anagrams before continuing with the words we already have.
+        val ticket=generation
+        message("Gemma: $letters • finding missing full-length words…")
+        gemma.suggestWords(letters) { outcome ->
+            handler.post {
+                if(ticket!=generation || !autoPilot || !gemmaMode)
+                    return@post
+                aiCandidateWords=outcome.getOrNull().orEmpty()
+                    .filter { WordEngine.isValid(it,letters) }
+                    .distinct()
+                val all=(aiCandidateWords+dictionary).distinct()
+                if(all.isEmpty()) {
+                    message("No playable words for $letters — review")
+                    stopAutomation("AI paused: no playable words for $letters")
+                    if(reviewPanel==null)showReview()
+                    return@post
+                }
+                if(outcome.isFailure) {
+                    android.util.Log.w("WordscapesAuto",
+                        "Gemma anagram fallback failed",outcome.exceptionOrNull())
+                }
+                message("$letters: ${aiCandidateWords.size} Gemma + ${dictionary.size} local")
+                startSolving(letters)
+            }
+        }
     }
 
     /**
@@ -1052,7 +1086,12 @@ class WordscapesService : AccessibilityService() {
         activePoints = pendingPoints.toList()
         activeCalibration = cal
         activeWheel = pendingWheel
-        solveWords = WordEngine.solve(letters)
+        // Model suggestions are constrained to the confirmed physical tiles.
+        // Put longer missing dictionary words first, then known local words.
+        // New puzzle resets aiCandidateWords in gemmaUseWheel().
+        solveWords = (aiCandidateWords + WordEngine.solve(letters))
+            .filter { WordEngine.isValid(it,letters) }.distinct().take(170)
+        aiCandidateWords = emptyList()
         solveIndex = 0
         isRunning = true
         generation++
